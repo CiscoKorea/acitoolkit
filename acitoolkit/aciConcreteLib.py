@@ -22,18 +22,104 @@
 """
 This is a library of all the Concrete classes that are on a switch.
 """
-"""
-"""
-# all the import
 import copy
 from operator import itemgetter
+
 from .acibaseobject import BaseACIPhysObject
-import acitoolkit as ACI
-from .aciTable import Table
+from .aciphysobject import Node
 from .aciSearch import Searchable
+from .aciTable import Table
+from .acitoolkit import Context, EPG
 
 
-class ConcreteArp(BaseACIPhysObject):
+class CommonConcreteObject(BaseACIPhysObject):
+    """
+    Intermediate abstract class that provides common methods for physical
+    objects storing data in an 'attr' dictionary.
+    """
+
+    def __init__(self, parent=None):
+        self.attr = {'dn':'', 'name':''}
+        super(CommonConcreteObject, self).__init__(parent=parent)
+
+    def populate_children(self, deep=False, include_concrete=False):
+        """
+        Populates all of the children and then calls populate_children\
+        of those children if deep is True.  This method should be\
+        overridden by any object that does have children.
+
+        If include_concrete is True, then if the object has concrete objects
+        below it, i.e. is a switch, then also populate those conrete object.
+
+        :param include_concrete: True or False. Default is False
+        :param deep: True or False.  Default is False.
+        """
+        for child_class in self._get_children_classes():
+            child_class.get(self._top, self)
+
+        if include_concrete:
+            for concrete_class in self._get_children_concrete_classes():
+                concrete_class.get(self._top, self)
+
+        if deep:
+            for child in self._children:
+                child.populate_children(deep, include_concrete)
+
+        return self._children
+
+    def get_attributes(self, name=None):
+        results = super(CommonConcreteObject, self).get_attributes(name)
+        for attr in self.attr:
+            if isinstance(self.attr[attr], str) or isinstance(self.attr[attr], bool):
+                results[attr] = str(self.attr[attr])
+            else:
+                if self.attr[attr] is not None:
+                    print('Wrong Instance Type %s %s found %s' % (attr, self.__class__.__name__, type(self.attr[attr])))
+                    
+        return results
+
+    @property
+    def dn(self):
+        return self.attr['dn']
+
+    @dn.setter
+    def dn(self, value):
+        self.attr['dn'] = value
+
+    @property
+    def name(self):
+        return self.attr['name']
+
+    @name.setter
+    def name(self, value):
+        self.attr['name'] = value
+
+    def __eq__(self, other):
+        """
+        True when instances equal or derivative types and distinguished name
+        matches.
+        :param other:
+        :return: True if equal
+        """
+        if isinstance(other, self.__class__):
+            return self.attr.get('dn') == other.attr.get('dn')
+        return NotImplemented
+
+    @staticmethod
+    def _parse_dn_pod_node(dn):
+        """Parses the pod, node, and slot from a
+           distinguished name of the node.
+
+           :param dn: str - distinguished name
+
+           :returns: pod, node, slot strings
+        """
+        name = dn.split('/')
+        pod = str(name[1].split('-')[1])
+        node = str(name[2].split('-')[1])
+        return pod, node
+
+class ConcreteArp(CommonConcreteObject):
     """
     This class is for the ARP state on a switch.  It is organized into two data structures.
     The first is self.attr which holds attributes for the Arp in general.
@@ -47,11 +133,10 @@ class ConcreteArp(BaseACIPhysObject):
 
     def __init__(self, parent=None):
         """
-            Initialize the ARP object.
-            """
+        Initialize the ARP object.
+        """
 
         super(ConcreteArp, self).__init__(parent=parent)
-        self.attr = {}
         self.domain = []
         self._parent = parent
         if parent is not None:
@@ -66,7 +151,17 @@ class ConcreteArp(BaseACIPhysObject):
 
         :returns: class of parent object
         """
-        return ACI.Node
+        return Node
+
+    @staticmethod
+    def _get_children_concrete_classes():
+        """
+        Get the acitoolkit class of the children of this object.
+        This is meant to be overridden by any inheriting classes that have children.
+        If they don't have children, this will return an empty list.
+        :return: list of classes
+        """
+        return [ConcreteArpDomain]
 
     @classmethod
     def _get_apic_classes(cls):
@@ -75,7 +170,7 @@ class ConcreteArp(BaseACIPhysObject):
 
         :returns: list of strings containing APIC class names
         """
-        resp = ['arpInst', 'arpDomStatsAdj', 'arpDomStatsRx', 'arpDomStatsTx', 'arpDom', 'arpDb', 'arpAdjEp']
+        resp = ['arpInst']
 
         return resp
 
@@ -94,45 +189,159 @@ class ConcreteArp(BaseACIPhysObject):
         for data in node_data:
             if 'arpInst' in data:
                 arp = cls()
-                arp.attr['adminSt'] = data['arpInst']['attributes']['adminSt']
-                arp.attr['dn'] = data['arpInst']['attributes']['dn']
-                arp.get_arp_domain(top)
+                arp._top = top
+                arp.attr['admin_state'] = str(data['arpInst']['attributes']['adminSt'])
+                arp.attr['dn'] = str(data['arpInst']['attributes']['dn'])
+                ConcreteArpDomain.get(top, arp)
+                # arp.get_arp_domain(top)
                 result.append(arp)
             if parent:
                 arp._parent = parent
                 arp._parent.add_child(arp)
         return result
 
-    def get_arp_domain(self, working_data):
+    @staticmethod
+    def get_table(arps, title=''):
+        """
+        Returns arp information in a displayable format.
+        :param title:
+        :param arps:
+        """
+        result = []
+        headers = ['Tenant', 'Context', 'Add', 'Delete', 'Timeout',
+                   'Resolved', 'Incomplete', 'Total', 'Rx Pkts',
+                   'Rx Drop', 'Tx Pkts', 'Tx Drop', 'Tx Req',
+                   'Tx Grat Req', 'Tx Resp']
+        data = []
+        for arp in arps:
+            for domain in arp.get_children(ConcreteArpDomain):
+                data.append([
+                    domain.tenant,
+                    domain.context,
+                    domain._stats.get('adjAdd', ''),
+                    domain._stats.get('adjDel', ''),
+                    domain._stats.get('adjTimeout', ''),
+                    domain._stats.get('resolved', ''),
+                    domain._stats.get('incomplete', ''),
+                    domain._stats.get('total', ''),
+                    domain._stats.get('pktRcvd', ''),
+                    domain._stats.get('pktRcvdDrp', ''),
+                    domain._stats.get('pktSent', ''),
+                    domain._stats.get('pktSentDrop', ''),
+                    domain._stats.get('pktSentReq', ''),
+                    domain._stats.get('pktSentGratReq', ''),
+                    domain._stats.get('pktSentRsp', '')
+                ])
+
+            data = sorted(data)
+            result.append(Table(data, headers, title=title + 'ARP Stats'))
+
+            headers = ['Tenant', 'Context', 'MAC Address', 'IP Address',
+                       'Physical I/F', 'Interface ID', 'Oper Status']
+            data = []
+            for domain in arp.get_children(ConcreteArpDomain):
+                for entry in domain.get_children(ConcreteArpEntry):
+                    data.append([
+                        str(domain.tenant),
+                        str(domain.context),
+                        entry.mac,
+                        entry.ip,
+                        entry.physical_interface,
+                        entry.interface_id,
+                        entry.oper_st
+                    ])
+            result.append(Table(data, headers, title=title + 'ARP Entries'))
+
+        return result
+
+    def __str__(self):
+        return 'ARP'
+
+
+class ConcreteArpDomain(CommonConcreteObject):
+
+    def __init__(self, parent=None):
+        """
+        VPC info for a switch
+        """
+        super(ConcreteArpDomain, self).__init__(parent=parent)
+        self._stats = {}
+
+    @staticmethod
+    def _get_parent_class():
+        """
+        Gets the acitoolkit class of the parent object
+        Meant to be overridden by inheriting classes.
+        Raises exception if not overridden.
+
+        :returns: class of parent object
+        """
+        return ConcreteArp
+
+    @staticmethod
+    def _get_children_concrete_classes():
+        """
+        Get the acitoolkit class of the children of this object.
+        This is meant to be overridden by any inheriting classes that have children.
+        If they don't have children, this will return an empty list.
+        :return: list of classes
+        """
+        return [ConcreteArpEntry]
+
+    @classmethod
+    def _get_apic_classes(cls):
+        """
+        Get the APIC classes used by this acitoolkit class.
+
+        :returns: list of strings containing APIC class names
+        """
+        resp = ['arpDom','arpDomStatsAdj', 'arpDomStatsRx', 'arpDomStatsTx',]
+
+        return resp
+
+    @classmethod
+    def get(cls, working_data, parent):
         """
         Get various attributes from the arp domain
         :param working_data:
         """
+        cls.check_parent(parent)
 
-        data = working_data.get_subtree('arpDom', self.attr['dn'])
-        for domain in data:
-            result = {'stats': {},
-                      'entry': [],
-                      'name': domain['arpDom']['attributes']['name'],
-                      'encap': domain['arpDom']['attributes']['encap']}
-            arpdom_dn = domain['arpDom']['attributes']['dn']
-            result['stats'].update(self.get_stats('arpDomStatsAdj', arpdom_dn, working_data))
-            result['stats'].update(self.get_stats('arpDomStatsRx', arpdom_dn, working_data))
-            result['stats'].update(self.get_stats('arpDomStatsTx', arpdom_dn, working_data))
+        resp = []
+        node_data = working_data.get_subtree('arpDom',parent.dn)
+        for domain in node_data:
+            concrete_arp_domain = cls()
+            concrete_arp_domain._top = working_data
+            concrete_arp_domain._populate_from_attributes(domain['arpDom']['attributes'])
+            arpdom_dn = str(domain['arpDom']['attributes']['dn'])
+            concrete_arp_domain._stats.update(cls.get_stats('arpDomStatsAdj', arpdom_dn, working_data))
+            concrete_arp_domain._stats.update(cls.get_stats('arpDomStatsRx', arpdom_dn, working_data))
+            concrete_arp_domain._stats.update(cls.get_stats('arpDomStatsTx', arpdom_dn, working_data))
 
-            arpdb_data = working_data.get_subtree('arpDb', arpdom_dn)
-            for arpdb_datum in arpdb_data:
-                entry = self.get_arp_entry(arpdb_datum['arpDb']['attributes']['dn'], working_data)
-                result['entry'].append(entry)
+            ConcreteArpEntry.get(working_data, concrete_arp_domain)
 
-            if ':' in result['name']:
-                result['tenant'] = result['name'].split(':')[0]
-                result['context'] = result['name'].split(':')[1]
-            else:
-                result['tenant'] = ''
-                result['context'] = result['name']
+            concrete_arp_domain._parent = parent
+            concrete_arp_domain._parent.add_child(concrete_arp_domain)
 
-            self.domain.append(result)
+            resp.append(concrete_arp_domain)
+
+        return resp
+
+    def _populate_from_attributes(self, attributes):
+        """
+        Populate attributes
+        :param attributes:
+        :return:
+        """
+        self.name = str(attributes['name'])
+        self.encap = str(attributes['encap'])
+        self.dn = str(attributes['dn'])
+        if ':' in self.name:
+            self.tenant = self.name.split(':')[0]
+            self.context = self.name.split(':')[1]
+        else:
+            self.tenant = ''
+            self.context = self.name
 
     @staticmethod
     def get_stats(apic_class, dn, working_data):
@@ -148,114 +357,63 @@ class ConcreteArp(BaseACIPhysObject):
             return stat_data[0][apic_class]['attributes']
         return {}
 
+
+class ConcreteArpEntry(CommonConcreteObject) :
+
     @staticmethod
-    def get_arp_entry(dn, working_data):
+    def _get_parent_class():
+        """
+        Gets the acitoolkit class of the parent object
+        Meant to be overridden by inheriting classes.
+        Raises exception if not overridden.
+
+        :returns: class of parent object
+        """
+        return ConcreteArpDomain
+
+    @classmethod
+    def _get_apic_classes(cls):
+        """
+        Get the APIC classes used by this acitoolkit class.
+
+        :returns: list of strings containing APIC class names
+        """
+        resp = ['arpAdjEp','arpDb']
+
+        return resp
+
+    @classmethod
+    def get(cls, working_data, parent):
         """
         parses arpAdjEp
+        :param parent:
         :param working_data:
         :param dn:
         """
-        data = working_data.get_subtree('arpAdjEp', dn)
-        entry = {}
-        for datum in data:
+        resp = []
+        cls.check_parent(parent)
+        arpdb_data = working_data.get_subtree('arpDb', parent.dn)
+        for datum1 in arpdb_data:
+            arp_db_dn = datum1['arpDb']['attributes']['dn']
+            data = working_data.get_subtree('arpAdjEp', arp_db_dn)
+            for datum in data:
+                entry = cls()
+                entry._populate_from_attributes(datum['arpAdjEp']['attributes'])
+                entry._parent = parent
+                entry._parent.add_child(entry)
+                resp.append(entry)
+        return resp
 
-            entry = {'interface_id': datum['arpAdjEp']['attributes']['ifId'],
-                     'ip': datum['arpAdjEp']['attributes']['ip'],
-                     'mac': datum['arpAdjEp']['attributes']['mac'],
-                     'physical_interface': datum['arpAdjEp']['attributes']['physIfId'],
-                     'oper_st': datum['arpAdjEp']['attributes']['operSt']}
-        return entry
-
-    @staticmethod
-    def get_table(arps, title=''):
-        """
-        Returns arp information in a displayable format.
-        :param title:
-        :param arps:
-        """
-        result = []
-        headers = ['Tenant', 'Context', 'Add', 'Delete', 'Timeout.',
-                   'Resolved', 'Incomplete', 'Total', 'Rx Pkts',
-                   'Rx Drop', 'Tx Pkts', 'Tx Drop', 'Tx Req',
-                   'Tx Grat Req', 'Tx Resp']
-        data = []
-        for arp in arps:
-            for domain in arp.domain:
-                data.append([
-                    domain.get('tenant', ''),
-                    domain.get('context', ''),
-                    domain['stats'].get('adjAdd', ''),
-                    domain['stats'].get('adjDel', ''),
-                    domain['stats'].get('adjTimeout', ''),
-                    domain['stats'].get('resolved', ''),
-                    domain['stats'].get('incomplete', ''),
-                    domain['stats'].get('total', ''),
-                    domain['stats'].get('pktRcvd', ''),
-                    domain['stats'].get('pktRcvdDrp', ''),
-                    domain['stats'].get('pktSent', ''),
-                    domain['stats'].get('pktSentDrop', ''),
-                    domain['stats'].get('pktSentReq', ''),
-                    domain['stats'].get('pktSentGratReq', ''),
-                    domain['stats'].get('pktSentRsp', '')
-                ])
-
-            data = sorted(data)
-            result.append(Table(data, headers, title=title + 'ARP Stats'))
-
-            headers = ['Tenant', 'Context', 'MAC Address', 'IP Address',
-                       'Physical I/F', 'Interface ID', 'Oper Status']
-            data = []
-            for domain in arp.domain:
-                for entry in domain['entry']:
-                    data.append([
-                        str(domain.get('tenant', '')),
-                        str(domain.get('context', '')),
-                        str(entry.get('mac', '')),
-                        str(entry.get('ip', '')),
-                        str(entry.get('physical_interface', '')),
-                        str(entry.get('interface_id', '')),
-                        str(entry.get('oper_st', ''))
-                    ])
-            result.append(Table(data, headers, title=title + 'ARP Entries'))
-
-        return result
-
-    def _define_searchables(self):
-        """
-        Create all of the searchable terms
-
-        """
-        result = Searchable()
-        result.add_term('arp')
-        for domain in self.domain:
-            if 'entry' in domain:
-                for entry in domain['entry']:
-                    if entry['ip'] is not None:
-                        result.add_term('ipv4', entry['ip'], 'indirect')
-                    if entry['mac'] is not None:
-                        result.add_term('mac', entry['mac'], 'indirect')
-                    if entry['physical_interface'] is not None:
-                        result.add_term('interface', entry['physical_interface'])
-            if domain['name']:
-                result.add_term('context', domain['context'], 'indirect')
-                result.add_term('name', domain['name'], 'primary')
-            if domain['tenant']:
-                result.add_term('tenant', domain['tenant'], 'indirect')
-
-        return [result]
-
-    def __str__(self):
-        return 'ARP'
-
-    def __eq__(self, other):
-
-        if type(self) != type(other):
-            return False
-
-        return self.attr.get('dn') == other.attr.get('dn')
+    def _populate_from_attributes(self, attributes):
+        self.interface_id= str(attributes['ifId'])
+        self.ip= str(attributes['ip'])
+        self.mac= str(attributes['mac'])
+        self.physical_interface = str(attributes['physIfId'])
+        self.oper_st = str(attributes['operSt'])
+        self.dn = str(attributes['dn'])
 
 
-class ConcreteVpc(BaseACIPhysObject):
+class ConcreteVpc(CommonConcreteObject):
     """
     class for the VPC information for a switch
 
@@ -269,7 +427,6 @@ class ConcreteVpc(BaseACIPhysObject):
         super(ConcreteVpc, self).__init__(parent=parent)
         self.member_ports = []
         self.peer_info = {}
-        self.attr = {}
 
     @staticmethod
     def _get_parent_class():
@@ -280,7 +437,7 @@ class ConcreteVpc(BaseACIPhysObject):
 
         :returns: class of parent object
         """
-        return ACI.Node
+        return Node
 
     @classmethod
     def _get_apic_classes(cls):
@@ -332,10 +489,10 @@ class ConcreteVpc(BaseACIPhysObject):
         get info from the instance
         """
         inst_data = top.get_subtree('vpcInst', self.attr['dn'])
-        self.attr['admin_st'] = None
+        self.attr['admin_state'] = None
         for inst in inst_data:
             if 'vpcInst' in inst:
-                self.attr['admin_st'] = str(inst['vpcInst']['attributes']['adminSt'])
+                self.attr['admin_state'] = str(inst['vpcInst']['attributes']['adminSt'])
                 self._populate_from_dom(top, inst['vpcInst']['attributes']['dn'])
 
     def _populate_from_dom(self, top, dname):
@@ -350,7 +507,7 @@ class ConcreteVpc(BaseACIPhysObject):
                 attr = dom['vpcDom']['attributes']
                 self.attr['compat_str'] = str(attr['compatQualStr'])
                 self.attr['compat_st'] = str(attr['compatSt'])
-                self.attr['dual_active_st'] = str(attr['dualActiveSt'])
+                self.attr['dual_active_st'] = str(attr['dualActiveSt']).capitalize()  # to make it consistent
                 self.attr['id'] = str(attr['id'])
                 self.attr['role'] = str(attr['lacpRole'])
                 self.attr['local_mac'] = str(attr['localMAC'])
@@ -376,7 +533,7 @@ class ConcreteVpc(BaseACIPhysObject):
         """
         result = []
         for vpc in vpcs:
-            if vpc.attr['admin_st'] == 'enabled' and vpc.attr['dom_present']:
+            if vpc.attr['admin_state'] == 'enabled' and vpc.attr['dom_present']:
                 headers = ['Name',
                            'ID',
                            'Virtual MAC',
@@ -402,7 +559,7 @@ class ConcreteVpc(BaseACIPhysObject):
                          vpc.attr.get('id', ''),
                          vpc.attr.get('virtual_mac', ''),
                          vpc.attr.get('virtual_ip', ''),
-                         vpc.attr.get('admin_st', ''),
+                         vpc.attr.get('admin_state', ''),
                          vpc.attr.get('oper_st', ''),
                          vpc.attr.get('dom_oper_st', ''),
                          vpc.attr.get('role', ''),
@@ -422,67 +579,20 @@ class ConcreteVpc(BaseACIPhysObject):
                 result.append(table)
             else:
                 headers = ['Admin State', 'Oper State']
-                data = [[vpc.attr.get('admin_st', ''), vpc.attr.get('oper_st', '')]]
+                data = [[vpc.attr.get('admin_state', ''), vpc.attr.get('oper_st', '')]]
 
                 table = Table(data, headers, title=title + 'Virtual Port Channel (VPC)')
                 result.append(table)
         return result
 
-    def _define_searchables(self):
-        """
-        Create all of the searchable terms
-
-        """
-        result = Searchable()
-        result.add_term('vpc')
-        if 'name' in self.attr:
-            result.add_term('name', self.attr['name'])
-
-        if 'virtual_mac' in self.attr:
-            result.add_term('mac', self.attr['virtual_mac'])
-
-        if 'local_mac' in self.attr:
-            result.add_term('mac', self.attr['local_mac'])
-
-        if 'sys_mac' in self.attr:
-            result.add_term('mac', self.attr['sys_mac'])
-
-        if 'id' in self.attr:
-            result.add_term('id', self.attr['id'])
-
-        if 'role' in self.attr:
-            result.add_term('role', self.attr['role'])
-
-        if 'mac' in self.peer_info:
-            result.add_term('mac', self.peer_info['mac'], 'indirect')
-
-        if 'ip' in self.peer_info:
-            result.add_term('ipv4', self.peer_info['ip'].split('/')[0], 'indirect')
-
-        if 'virtual_ip' in self.attr:
-            result.add_term('ipv4', self.attr['virtual_ip'].split('/')[0])
-
-        return [result]
-
     def __str__(self):
         return 'VPC_' + self.attr['id']
 
-    def __eq__(self, other):
 
-        if type(self) != type(other):
-            return False
-
-        return self.attr.get('dn') == other.attr.get('dn')
-
-
-class ConcreteVpcIf(BaseACIPhysObject):
+class ConcreteVpcIf(CommonConcreteObject):
     """
     Class to hold a VPC interface
     """
-
-    def __init__(self, parent=None):
-        super(ConcreteVpcIf, self).__init__(parent=parent)
-        self.attr = {}
 
     @staticmethod
     def _get_parent_class():
@@ -598,32 +708,23 @@ class ConcreteVpcIf(BaseACIPhysObject):
 
         :rtype : list of Searchable
         """
-        result = Searchable()
-
-        if 'id' in self.attr:
-            result.add_term('id', self.attr['id'])
-
-        if 'interface' in self.attr:
-            result.add_term('interface', self.attr['interface'])
+        results = super(ConcreteVpcIf, self)._define_searchables()
 
         if 'up_vlans' in self.attr:
             vlan_list = self.expand_vlans(self.attr['up_vlans'].replace(' ', ''))
             for vlan in vlan_list:
-                result.add_term('vlan', str(vlan))
+                results[0].add_term('vlan', str(vlan))
         if 'remote_up_vlans' in self.attr:
             vlan_list = self.expand_vlans(self.attr['remote_up_vlans'].replace(' ', ''))
             for vlan in vlan_list:
-                result.add_term('vlan', str(vlan), 'indirect')
-
-        if 'access_vlan' in self.attr:
-            result.add_term('vlan', self.attr['access_vlan'])
+                results[0].add_term('vlan', str(vlan), 'secondary')
 
         if 'susp_vlans' in self.attr:
             vlan_list = self.expand_vlans(self.attr['susp_vlans'].replace(' ', ''))
             for vlan in vlan_list:
-                result.add_term('vlan', str(vlan))
+                results[0].add_term('vlan', str(vlan))
 
-        return [result]
+        return results
 
     @staticmethod
     def expand_vlans(vlans):
@@ -650,31 +751,12 @@ class ConcreteVpcIf(BaseACIPhysObject):
         """
         return 'VPC_Interface' + self.attr.get('id')
 
-    def __eq__(self, other):
 
-        """
-        Checks that the interfaces are equal
-        :param other:
-        :return: True if equal
-        """
-        if type(self) != type(other):
-            return False
-
-        return self.attr.get('dn') == other.attr.get('dn')
-
-
-class ConcreteContext(BaseACIPhysObject):
+class ConcreteContext(CommonConcreteObject):
     """
     The l3-context on a switch.  This is derived from
     the concrete model
     """
-
-    def __init__(self, parent=None):
-        """
-        l3-context on a switch
-        """
-        super(ConcreteContext, self).__init__(parent=parent)
-        self.attr = {}
 
     @staticmethod
     def _get_parent_class():
@@ -685,7 +767,7 @@ class ConcreteContext(BaseACIPhysObject):
 
         :returns: class of parent object
         """
-        return ACI.Node
+        return Node
 
     @classmethod
     def _get_apic_classes(cls):
@@ -737,7 +819,7 @@ class ConcreteContext(BaseACIPhysObject):
         self.attr['dn'] = str(attr['dn'])
         self.attr['oper_st'] = str(attr['operState'])
         self.attr['create_time'] = str(attr['createTs'])
-        self.attr['admin_st'] = str(attr['adminState'])
+        self.attr['admin_state'] = str(attr['adminState'])
         self.attr['oper_st_qual'] = str(attr['operStQual'])
         self.attr['encap'] = str(attr['encap'])
         self.attr['modified_time'] = str(attr['lastChgdTs'])
@@ -748,6 +830,7 @@ class ConcreteContext(BaseACIPhysObject):
         else:
             self.attr['tenant'] = ''
             self.attr['context'] = self.attr['name']
+        self.name = self.attr['context']
 
         if 'pcTag' in attr:
             self.attr['mcst_class_id'] = str(attr['pcTag'])
@@ -784,36 +867,13 @@ class ConcreteContext(BaseACIPhysObject):
                 context.attr.get('type', ''),
                 context.attr.get('vrf_id', ''),
                 context.attr.get('mcst_class_id', ''),
-                context.attr.get('admin_st', ''),
+                context.attr.get('admin_state', ''),
                 context.attr.get('oper_st', ''),
                 context.attr.get('modified_time', '')])
 
         data = sorted(data)
         table = Table(data, headers, title=title + 'Contexts (VRFs)')
         return [table, ]
-
-    def _define_searchables(self):
-        """
-        Create all of the searchable terms
-
-        :rtype : list of Searchable
-        """
-        result = Searchable()
-
-        if 'name' in self.attr:
-            result.add_term('name', self.attr['name'])
-            result.add_term('context', self.attr['name'])
-
-        if 'vnid' in self.attr:
-            result.add_term('vnid', self.attr['vnid'])
-
-        if 'scope' in self.attr:
-            result.add_term('scope', self.attr['scope'])
-
-        if 'mcst_class_id' in self.attr:
-            result.add_term('class', self.attr['mcst_class_id'])
-
-        return [result]
 
     def __str__(self):
         """
@@ -823,31 +883,12 @@ class ConcreteContext(BaseACIPhysObject):
         """
         return 'Concrete_Context' + self.attr.get('name')
 
-    def __eq__(self, other):
 
-        """
-        Checks that the interfaces are equal
-        :param other:
-        :return: True if equal
-        """
-        if type(self) != type(other):
-            return False
-
-        return self.attr.get('dn') == other.attr.get('dn')
-
-
-class ConcreteSVI(BaseACIPhysObject):
+class ConcreteSVI(CommonConcreteObject):
     """
     The SVIs on a switch.  This is derived from
     the concrete model in the switch
     """
-
-    def __init__(self, parent=None):
-        """
-        SVI on a switch
-        """
-        super(ConcreteSVI, self).__init__(parent=parent)
-        self.attr = {}
 
     @staticmethod
     def _get_parent_class():
@@ -858,7 +899,7 @@ class ConcreteSVI(BaseACIPhysObject):
 
         :returns: class of parent object
         """
-        return ACI.Node
+        return ConcreteBD
 
     @classmethod
     def _get_apic_classes(cls):
@@ -883,7 +924,11 @@ class ConcreteSVI(BaseACIPhysObject):
         cls.check_parent(parent)
         result = []
 
-        svi_data = top.get_class('sviIf')
+        if parent is not None:
+            svi_data = top.get_subtree('sviIf', parent.dn)
+        else:
+            svi_data = top.get_class('sviIf')
+
         for svi_obj in svi_data:
             svi = cls()
             if 'sviIf' in svi_obj:
@@ -903,7 +948,7 @@ class ConcreteSVI(BaseACIPhysObject):
        :param attr: Attributes of the APIC object
         """
         self.attr['bandwidth'] = str(attr['bw'])
-        self.attr['admin_st'] = str(attr['adminSt'])
+        self.attr['admin_state'] = str(attr['adminSt'])
         self.attr['oper_st_qual'] = str(attr['operStQual'])
         self.attr['oper_st'] = str(attr['operSt'])
         self.attr['modified_time'] = str(attr['modTs'])
@@ -913,6 +958,10 @@ class ConcreteSVI(BaseACIPhysObject):
         self.attr['vlan_id'] = str(attr['vlanId'])
         self.attr['vlan_type'] = str(attr['vlanT'])
         self.attr['dn'] = str(attr['dn'])
+        if self.attr['name'] is '':
+            self.name = self.attr['id']
+        else:
+            self.name = self.attr['name']
 
     @staticmethod
     def get_table(aci_objects, title=''):
@@ -932,7 +981,7 @@ class ConcreteSVI(BaseACIPhysObject):
                 aci_object.attr.get('vlan_id', ''),
                 aci_object.attr.get('mac', ''),
                 aci_object.attr.get('bw', ''),
-                aci_object.attr.get('admin_st', ''),
+                aci_object.attr.get('admin_state', ''),
                 aci_object.attr.get('oper_st', ''),
                 aci_object.attr.get('oper_st_qual', '')
             ])
@@ -941,26 +990,17 @@ class ConcreteSVI(BaseACIPhysObject):
         result.append(Table(data, headers, title=title + 'SVI (Router Interfaces)'))
         return result
 
-    def _define_searchables(self):
+    def __eq__(self, other):
+
         """
-        Create all of the searchable terms
-
-        :rtype : list of Searchable
+        Checks that the tunnels are equal
+        :param other:
+        :return: True if equal
         """
-        result = Searchable()
-        result.add_term('svi')
-
-        if 'name' in self.attr:
-            result.add_term('name', self.attr['name'])
-        if 'mac' in self.attr:
-            result.add_term('mac', self.attr['mac'])
-        if 'id' in self.attr:
-            result.add_term('id', self.attr['id'])
-
-        if 'vlan_id' in self.attr:
-            result.add_term('vlan', self.attr['vlan_id'])
-
-        return [result]
+        if isinstance(other, self.__class__):
+            return self.dn == other.dn
+        else:
+            return False
 
     def __str__(self):
         """
@@ -970,30 +1010,11 @@ class ConcreteSVI(BaseACIPhysObject):
         """
         return 'Concrete_SVI' + self.attr.get('name')
 
-    def __eq__(self, other):
 
-        """
-        Checks that the interfaces are equal
-        :param other:
-        :return: True if equal
-        """
-        if type(self) != type(other):
-            return False
-
-        return self.attr.get('dn') == other.attr.get('dn')
-
-
-class ConcreteLoopback(BaseACIPhysObject):
+class ConcreteLoopback(CommonConcreteObject):
     """
     Loopback interfaces on the switch
     """
-
-    def __init__(self, parent=None):
-        """
-        SVI on a switch
-        """
-        super(ConcreteLoopback, self).__init__(parent=parent)
-        self.attr = {}
 
     @staticmethod
     def _get_parent_class():
@@ -1004,7 +1025,7 @@ class ConcreteLoopback(BaseACIPhysObject):
 
         :returns: class of parent object
         """
-        return ACI.Node
+        return Node
 
     @classmethod
     def _get_apic_classes(cls):
@@ -1049,9 +1070,10 @@ class ConcreteLoopback(BaseACIPhysObject):
        :param attr: Attributes of the APIC object
         """
         self.attr['descr'] = str(attr['descr'])
-        self.attr['admin_st'] = str(attr['adminSt'])
+        self.attr['admin_state'] = str(attr['adminSt'])
         self.attr['id'] = str(attr['id'])
         self.attr['dn'] = str(attr['dn'])
+        self.name = self.attr['id']
 
     def _get_oper_st(self, dname, top):
         """
@@ -1064,19 +1086,6 @@ class ConcreteLoopback(BaseACIPhysObject):
             self.attr['oper_st'] = str(obj['ethpmLbRtdIf']['attributes']['operSt'])
             self.attr['oper_st_qual'] = str(obj['ethpmLbRtdIf']['attributes']['operStQual'])
 
-    def _define_searchables(self):
-        """
-        Create all of the searchable terms
-
-        :rtype : list of Searchable
-        """
-        result = Searchable()
-
-        if 'id' in self.attr:
-            result.add_term('id', self.attr['id'])
-
-        return [result]
-
     def __str__(self):
         """
         Default print string
@@ -1085,31 +1094,12 @@ class ConcreteLoopback(BaseACIPhysObject):
         """
         return 'Concrete_Loopback' + self.attr.get('id')
 
-    def __eq__(self, other):
 
-        """
-        Checks that the interfaces are equal
-        :param other:
-        :return: True if equal
-        """
-        if type(self) != type(other):
-            return False
-
-        return self.attr.get('dn') == other.attr.get('dn')
-
-
-class ConcreteBD(BaseACIPhysObject):
+class ConcreteBD(CommonConcreteObject):
     """
     The bridge domain on a switch.  This is derived from
     the concrete model
     """
-
-    def __init__(self, parent=None):
-        """
-        bridge domain on a switch
-        """
-        super(ConcreteBD, self).__init__(parent=parent)
-        self.attr = {}
 
     @staticmethod
     def _get_parent_class():
@@ -1120,7 +1110,7 @@ class ConcreteBD(BaseACIPhysObject):
 
         :returns: class of parent object
         """
-        return ACI.Node
+        return Node
 
     @classmethod
     def _get_apic_classes(cls):
@@ -1132,6 +1122,16 @@ class ConcreteBD(BaseACIPhysObject):
         resp = ['l2BD', 'l3Ctx', 'l3Inst', 'fmcastGrp']
 
         return resp
+
+    @staticmethod
+    def _get_children_concrete_classes():
+        """
+        Get the acitoolkit class of the concrete children of this object.
+        This is meant to be overridden by any inheriting classes that have children.
+        If they don't have children, this will return an empty list.
+        :return: list of classes
+        """
+        return [ConcreteSVI]
 
     @classmethod
     def get(cls, top, parent=None):
@@ -1151,6 +1151,7 @@ class ConcreteBD(BaseACIPhysObject):
         bd_data = top.get_class('l2BD')
         for l2bd in bd_data:
             bdomain = cls()
+            bdomain._top = top
             bdomain._populate_from_attributes(l2bd['l2BD']['attributes'])
 
             # get the context name by reading the context
@@ -1172,7 +1173,7 @@ class ConcreteBD(BaseACIPhysObject):
         self.attr['dn'] = str(attr['dn'])
         self.attr['oper_st'] = str(attr['operSt'])
         self.attr['create_time'] = str(attr['createTs'])
-        self.attr['admin_st'] = str(attr['adminSt'])
+        self.attr['admin_state'] = str(attr['adminSt'])
 
         self.attr['access_encap'] = str(attr['accEncap'])
         self.attr['bridge_mode'] = str(attr['bridgeMode'])
@@ -1280,7 +1281,7 @@ class ConcreteBD(BaseACIPhysObject):
                 str(bdomain.attr.get('unknown_mcast', '')),
                 str(bdomain.attr.get('learn_disable', '')),
                 str(bdomain.attr.get('flood_gipo', '')),
-                str(bdomain.attr.get('admin_st', '')),
+                str(bdomain.attr.get('admin_state', '')),
                 str(bdomain.attr.get('oper_st', ''))])
 
         data = sorted(data)
@@ -1293,7 +1294,8 @@ class ConcreteBD(BaseACIPhysObject):
 
         :rtype : list of Searchable
         """
-        result = Searchable()
+        results = super(ConcreteBD, self)._define_searchables()
+        result = results[0]
 
         if ':' in self.attr['name']:
             result.add_term('name', self.attr['name'].split(':')[-1])
@@ -1309,12 +1311,7 @@ class ConcreteBD(BaseACIPhysObject):
             else:
                 result.add_term('context', self.attr['context_name'])
 
-        if 'vnid' in self.attr:
-            result.add_term('vnid', self.attr['vnid'])
-        if 'flood_gipo' in self.attr:
-            result.add_term('ipv4', self.attr['flood_gipo'])
-
-        return [result]
+        return results
 
     def __str__(self):
         """
@@ -1324,30 +1321,11 @@ class ConcreteBD(BaseACIPhysObject):
         """
         return 'Concrete_BD' + self.attr.get('name')
 
-    def __eq__(self, other):
 
-        """
-        Checks that the interfaces are equal
-        :param other:
-        :return: True if equal
-        """
-        if type(self) != type(other):
-            return False
-
-        return self.attr.get('dn') == other.attr.get('dn')
-
-
-class ConcreteAccCtrlRule(BaseACIPhysObject):
+class ConcreteAccCtrlRule(CommonConcreteObject):
     """
     Access control rules on a switch
     """
-
-    def __init__(self, parent=None):
-        """
-        access control rules on a switch
-        """
-        super(ConcreteAccCtrlRule, self).__init__(parent=parent)
-        self.attr = {}
 
     @staticmethod
     def _get_parent_class():
@@ -1358,7 +1336,7 @@ class ConcreteAccCtrlRule(BaseACIPhysObject):
 
         :returns: class of parent object
         """
-        return ACI.Node
+        return Node
 
     @classmethod
     def _get_apic_classes(cls):
@@ -1388,8 +1366,8 @@ class ConcreteAccCtrlRule(BaseACIPhysObject):
         result = []
 
         rule_data = top.get_class('actrlRule')
-        epgs = ACI.EPG.get(top.session)
-        contexts = ACI.Context.get(top.session)
+        epgs = EPG.get(top.session)
+        contexts = Context.get(top.session)
 
         for actrl_rule in rule_data:
             rule = cls()
@@ -1398,12 +1376,22 @@ class ConcreteAccCtrlRule(BaseACIPhysObject):
             rule._get_tenant_context(contexts)
             rule._get_epg_names(epgs)
             rule._get_pod_node()
+            rule._set_name()
             result.append(rule)
             if parent:
                 rule._parent = parent
                 rule._parent.add_child(rule)
         return result
-
+    def _set_name(self):
+        """
+        Will create a name if one does not exist
+        :return:
+        """
+        if self.attr['name'] =='':
+            self.attr['name'] = '{3}_{0}_{1}_{2}'.format(self.attr['s_epg'],
+                                                     self.attr['d_epg'],
+                                                     self.attr['filter_id'],
+                                                     self.attr['tenant'])
     def _populate_from_attributes(self, attr):
         """
         This will populate the object from the APIC attribute
@@ -1433,17 +1421,17 @@ class ConcreteAccCtrlRule(BaseACIPhysObject):
         Annotate the priority string with a number that indicates its relative priority
         :return:None
         """
-        prio_map = {'black_list': 1,
-                    'fabric_infra': 2,
-                    'fully_qual': 3,
-                    'system_incomplete': 4,
-                    'src_dst_any': 5,
-                    'src_any_filter': 6,
-                    'any_dest_filter': 7,
-                    'src_any_any': 8,
-                    'any_dest_any': 9,
-                    'any_any_filter': 10,
-                    'any_any_any': 12}
+        prio_map = {'black_list': '1',
+                    'fabric_infra': '2',
+                    'fully_qual': '3',
+                    'system_incomplete': '4',
+                    'src_dst_any': '5',
+                    'src_any_filter': '6',
+                    'any_dest_filter': '7',
+                    'src_any_any': '8',
+                    'any_dest_any': '9',
+                    'any_any_filter': '10',
+                    'any_any_any': '12'}
         self.attr['relative_priority'] = prio_map.get(self.attr['priority'], 'unknown')
 
     def _get_tenant_context(self, contexts):
@@ -1526,46 +1514,6 @@ class ConcreteAccCtrlRule(BaseACIPhysObject):
 
         return result
 
-    def _define_searchables(self):
-        """
-        Create all of the searchable terms
-
-        :rtype : list of Searchable
-        """
-        result = Searchable()
-
-        if 'tenant' in self.attr:
-            result.add_term('tenant', self.attr['tenant'])
-
-        if 'context' in self.attr:
-            result.add_term('context', self.attr['context'])
-
-        if 'scope' in self.attr:
-            result.add_term('scope', self.attr['scope'])
-
-        if 's_epg' in self.attr:
-            result.add_term('epg', self.attr['s_epg'])
-
-        if 'd_epg' in self.attr:
-            result.add_term('epg', self.attr['d_epg'])
-
-        if 'dclass' in self.attr:
-            result.add_term('class', self.attr['dclass'])
-
-        if 'sclass' in self.attr:
-            result.add_term('class', self.attr['sclass'])
-
-        if 'scope' in self.attr:
-            result.add_term('scope', self.attr['scope'])
-
-        if 'name' in self.attr:
-            result.add_term('name', self.attr['name'])
-
-        if 'filter_id' in self.attr:
-            result.add_term('filter', self.attr['filter_id'])
-
-        return [result]
-
     def __str__(self):
         """
         Default print string
@@ -1575,20 +1523,8 @@ class ConcreteAccCtrlRule(BaseACIPhysObject):
         return 'Access_Rule-{0}_{1}_{2}'.\
             format(self.attr.get('s_epg'), self.attr.get('d_epg'), self.attr.get('filter_id'))
 
-    def __eq__(self, other):
 
-        """
-        Checks that the interfaces are equal
-        :param other:
-        :return: True if equal
-        """
-        if type(self) != type(other):
-            return False
-
-        return self.attr.get('dn') == other.attr.get('dn')
-
-
-class ConcreteFilter(BaseACIPhysObject):
+class ConcreteFilter(CommonConcreteObject):
     """
     Access control filters on a switch
     """
@@ -1599,7 +1535,6 @@ class ConcreteFilter(BaseACIPhysObject):
         """
         super(ConcreteFilter, self).__init__(parent=parent)
         self.entries = []
-        self.attr = {}
 
     @staticmethod
     def _get_parent_class():
@@ -1610,7 +1545,7 @@ class ConcreteFilter(BaseACIPhysObject):
 
         :returns: class of parent object
         """
-        return ACI.Node
+        return Node
 
     @classmethod
     def _get_apic_classes(cls):
@@ -1664,6 +1599,8 @@ class ConcreteFilter(BaseACIPhysObject):
         self.attr['status'] = str(attr['status'])
         self.attr['modified_time'] = str(attr['modTs'])
         self.attr['dn'] = str(attr['dn'])
+        if self.name == '':
+            self.name = self.attr['id']
 
     def _get_entries(self, top):
         """
@@ -1724,22 +1661,6 @@ class ConcreteFilter(BaseACIPhysObject):
             return str(from_port)
         return '{0}-{1}'.format(str(from_port), str(to_port))
 
-    def _define_searchables(self):
-        """
-        Create all of the searchable terms
-
-        :rtype : list of Searchable
-        """
-        result = Searchable()
-
-        if 'name' in self.attr:
-            result.add_term('name', self.attr['name'])
-
-        if 'id' in self.attr:
-            result.add_term('id', self.attr['id'])
-
-        return [result]
-
     def __str__(self):
         """
         Default print string
@@ -1748,30 +1669,11 @@ class ConcreteFilter(BaseACIPhysObject):
         """
         return 'Concrete_Filter' + self.attr.get('id')
 
-    def __eq__(self, other):
 
-        """
-        Checks that the interfaces are equal
-        :param other:
-        :return: True if equal
-        """
-        if type(self) != type(other):
-            return False
-
-        return self.attr.get('dn') == other.attr.get('dn')
-
-
-class ConcreteFilterEntry(BaseACIPhysObject):
+class ConcreteFilterEntry(CommonConcreteObject):
     """
     Access control entries of a filter
     """
-
-    def __init__(self, parent=None):
-        """
-        access control filters of a filter
-        """
-        super(ConcreteFilterEntry, self).__init__(parent=parent)
-        self.attr = {}
 
     @staticmethod
     def _get_parent_class():
@@ -1875,25 +1777,6 @@ class ConcreteFilterEntry(BaseACIPhysObject):
         """
         self.attr['id'] = self.attr['name'].split('_')[-1]
 
-    def _define_searchables(self):
-        """
-        Create all of the searchable terms
-
-        :rtype : list of Searchable
-        """
-        result = Searchable()
-
-        if 'name' in self.attr:
-            result.add_term('name', self.attr['name'])
-
-        if 'filter_name' in self.attr:
-            result.add_term('name', self.attr['filter_name'])
-
-        if 'id' in self.attr:
-            result.add_term('id', self.attr['id'])
-
-        return [result]
-
     def __str__(self):
         """
         Default print string
@@ -1902,20 +1785,8 @@ class ConcreteFilterEntry(BaseACIPhysObject):
         """
         return 'Concrete_Filter_Entry' + self.attr.get('id')
 
-    def __eq__(self, other):
 
-        """
-        Checks that the interfaces are equal
-        :param other:
-        :return: True if equal
-        """
-        if type(self) != type(other):
-            return False
-
-        return self.attr.get('dn') == other.attr.get('dn')
-
-
-class ConcreteEp(BaseACIPhysObject):
+class ConcreteEp(CommonConcreteObject):
     """
     Endpoint on the switch
     """
@@ -1925,7 +1796,8 @@ class ConcreteEp(BaseACIPhysObject):
         endpoints on a switch
         """
         super(ConcreteEp, self).__init__(parent=parent)
-        self.attr = {'ip': None, 'mac': None}
+        self.attr['ip'] = None
+        self.attr['mac'] = None
 
     @staticmethod
     def _get_parent_class():
@@ -1936,7 +1808,7 @@ class ConcreteEp(BaseACIPhysObject):
 
         :returns: class of parent object
         """
-        return ACI.Node
+        return Node
 
     @classmethod
     def _get_apic_classes(cls):
@@ -2045,6 +1917,12 @@ class ConcreteEp(BaseACIPhysObject):
             if parent:
                 ep._parent = parent
                 ep._parent.add_child(ep)
+            if ep.attr['mac'] is not None and ep.attr['ip'] is not None:
+                ep.name = '{0}_{1}'.format(ep.attr['mac'], ep.attr['ip'])
+            elif ep.attr['mac'] is not None:
+                ep.name = ep.attr['mac']
+            elif ep.attr['ip'] is not None:
+                ep.name = ep.attr['ip']
 
         return final_result
 
@@ -2103,6 +1981,9 @@ class ConcreteEp(BaseACIPhysObject):
         self.attr['interface_id'] = str(attr['ifId'])
         self.attr['create_time'] = str(attr['createTs'])
         self.attr['dn'] = str(attr['dn'])
+        (pod, node) = self._parse_dn_pod_node(self.attr['dn'])
+        self.attr['pod'] = pod
+        self.attr['node'] = node
 
     @staticmethod
     def get_table(end_points, title=''):
@@ -2260,29 +2141,6 @@ class ConcreteEp(BaseACIPhysObject):
 
         return result
 
-    def _define_searchables(self):
-        """
-        Create all of the searchable terms
-
-        :rtype : list of Searchable
-        """
-        result = Searchable()
-
-        if 'context' in self.attr:
-            result.add_term('context', self.attr['context'])
-
-        if 'bridge_domain' in self.attr:
-            result.add_term('bridgedomain', self.attr['bridge_domain'])
-
-        if 'mac' in self.attr:
-            result.add_term('mac', self.attr['mac'])
-        if 'ip' in self.attr:
-            result.add_term('ipv4', self.attr['ip'])
-        if 'interface_id' in self.attr:
-            result.add_term('interface', self.attr['interface_id'])
-
-        return [result]
-
     def __str__(self):
         """
         Default print string
@@ -2291,20 +2149,18 @@ class ConcreteEp(BaseACIPhysObject):
         """
         return 'Concrete_Endpoint-' + 'MAC({0})_IP({1})'.format(self.attr.get('mac'), self.attr.get('ip'))
 
-    def __eq__(self, other):
-
+    def _define_searchables(self):
         """
-        Checks that the interfaces are equal
-        :param other:
-        :return: True if equal
+        Create all of the searchable terms
+
+        :rtype : list of Searchable
         """
-        if type(self) != type(other):
-            return False
+        results = super(ConcreteEp, self)._define_searchables()
 
-        return self.attr.get('dn') == other.attr.get('dn')
+        results[0].add_term('ipv4', str(self.attr.get('ip', '')))
+        return results
 
-
-class ConcretePortChannel(BaseACIPhysObject):
+class ConcretePortChannel(CommonConcreteObject):
     """
     This gets the port channels for the switch
     """
@@ -2314,7 +2170,6 @@ class ConcretePortChannel(BaseACIPhysObject):
         port channel on a switch
         """
         super(ConcretePortChannel, self).__init__(parent=parent)
-        self.attr = {}
         self.members = []
 
     @staticmethod
@@ -2326,7 +2181,7 @@ class ConcretePortChannel(BaseACIPhysObject):
 
         :returns: class of parent object
         """
-        return ACI.Node
+        return Node
 
     @classmethod
     def _get_apic_classes(cls):
@@ -2373,7 +2228,7 @@ class ConcretePortChannel(BaseACIPhysObject):
         """
         self.attr['dn'] = str(attr['dn'])
         self.attr['active_ports'] = str(attr['activePorts'])
-        self.attr['admin_st'] = str(attr['adminSt'])
+        self.attr['admin_state'] = str(attr['adminSt'])
         self.attr['auto_neg'] = str(attr['autoNeg'])
         self.attr['bandwidth'] = str(attr['bw'])
         self.attr['dot1q_ether_type'] = str(attr['dot1qEtherType'])
@@ -2416,7 +2271,7 @@ class ConcretePortChannel(BaseACIPhysObject):
             member['state'] = str(attr['state'])
             phys_if = top.get_object(attr['tDn'])['l1PhysIf']['attributes']
             member['id'] = str(phys_if['id'])
-            member['admin_st'] = str(phys_if['adminSt'])
+            member['admin_state'] = str(phys_if['adminSt'])
             member['usage'] = str(phys_if['usage'])
             eth_if = top.get_subtree('ethpmPhysIf',
                                      phys_if['dn'])[0]['ethpmPhysIf']['attributes']
@@ -2475,7 +2330,7 @@ class ConcretePortChannel(BaseACIPhysObject):
                       pch.attr.get('min_links', ''),
                       pch.attr.get('auto_neg', ''),
                       pch.attr.get('flow_control', ''),
-                      pch.attr.get('admin_st', ''),
+                      pch.attr.get('admin_state', ''),
                       pch.attr.get('oper_st', ''),
                       pch.attr.get('oper_st_qual', ''),
                       pch.attr.get('switching_st', ''),
@@ -2498,7 +2353,7 @@ class ConcretePortChannel(BaseACIPhysObject):
             for member in sorted(pch.members, key=itemgetter('id')):
                 table.append([member.get('id', ''),
                               member.get('state', ''),
-                              member.get('admin_st', ''),
+                              member.get('admin_state', ''),
                               member.get('oper_st', ''),
                               member.get('oper_st_qual', ''),
                               member.get('usage', '')])
@@ -2508,32 +2363,6 @@ class ConcretePortChannel(BaseACIPhysObject):
 
         return result
 
-    def _define_searchables(self):
-        """
-        Create all of the searchable terms
-
-        :rtype : list of Searchable
-        """
-        result = Searchable()
-
-        if 'name' in self.attr:
-            result.add_term('name', self.attr['name'])
-
-        if 'id' in self.attr:
-            result.add_term('id', self.attr['id'])
-
-        if 'router_mac' in self.attr:
-            result.add_term('mac', self.attr['router_mac'])
-
-        if 'backplane_mac' in self.attr:
-            result.add_term('mac', self.attr['backplane_mac'])
-
-        for member in self.members:
-            if 'id' in member:
-                result.add_term('interface', member['id'])
-
-        return [result]
-
     def __str__(self):
         """
         Default print string
@@ -2542,32 +2371,17 @@ class ConcretePortChannel(BaseACIPhysObject):
         """
         return 'Concrete_Portchannel' + self.attr.get('id')
 
-    def __eq__(self, other):
 
-        """
-        Checks that the interfaces are equal
-        :param other:
-        :return: True if equal
-        """
-        if type(self) != type(other):
-            return False
-
-        return self.attr.get('dn') == other.attr.get('dn')
-
-
-class ConcreteOverlay(BaseACIPhysObject):
+class ConcreteTunnel(CommonConcreteObject):
     """
-    Will retrieve the overlay information for the switch
+    Concrete representation of an overlay tunnel
     """
-
     def __init__(self, parent=None):
         """
-        overlay information
+        Tunnel init
         """
-        super(ConcreteOverlay, self).__init__(parent=parent)
-        self.attr = {'vpc_tep_ip': None}
-        # adding VPC VTEP info to the Overlay Class
-        self.tunnels = []
+        super(ConcreteTunnel, self).__init__(parent=parent)
+        self.node = None
 
     @staticmethod
     def _get_parent_class():
@@ -2578,7 +2392,7 @@ class ConcreteOverlay(BaseACIPhysObject):
 
         :returns: class of parent object
         """
-        return ACI.Node
+        return ConcreteOverlay
 
     @classmethod
     def _get_apic_classes(cls):
@@ -2598,32 +2412,30 @@ class ConcreteOverlay(BaseACIPhysObject):
 
         :param parent:
         :param top: the topSystem level json object
-        :returns: Single overlay object
+        :returns: list of tunnel objects
         """
         cls.check_parent(parent)
 
         apic_class = cls._get_apic_classes()[0]
         data = top.get_class(apic_class)
-        ovly = cls()
-        tunnels = []
-
-        # Adding the VPC VTEP to the list to help figure Tunnel endpoints
-        if parent.vpc_info:
-            if parent.vpc_info['oper_state'] == 'active':
-                ovly.attr['vpc_tep_ip'] = parent.vpc_info['vtep_ip'].split('/')[0]
-
+        result = []
         for obj in data:
+            tunnel = cls()
             if apic_class in obj:
-                tunnels.append(ovly._populate_from_attributes(obj['tunnelIf']['attributes']))
-        if tunnels:
-            ovly.tunnels = sorted(tunnels, key=itemgetter('id'))
-        else:
-            ovly.tunnels = tunnels
-        if parent:
-            ovly._parent = parent
-            ovly._parent.add_child(ovly)
+                tunnel._populate_from_attributes(obj[apic_class]['attributes'])
 
-        return ovly
+
+            if parent:
+                tunnel._parent = parent
+                tunnel._parent.add_child(tunnel)
+                tunnel.pod = tunnel._parent.pod
+                tunnel.node = tunnel._parent.node
+
+            tunnel.update_proxy_in_parent()
+
+            result.append(tunnel)
+
+        return result
 
     def _populate_from_attributes(self, attr):
         """
@@ -2632,21 +2444,150 @@ class ConcreteOverlay(BaseACIPhysObject):
         :param attr: Attributes of the APIC object
         """
         self.attr['src_tep_ip'] = str(attr['src']).split('/')[0]
-        tunnel = {'dest_tep_ip': str(attr['dest']),
-                  'id': str(attr['id']),
-                  'oper_st': str(attr['operSt']),
-                  'oper_st_qual': str(attr['operStQual']),
-                  'context': str(attr['vrfName']),
-                  'type': str(attr['type']),
-                  'dn': str(attr['dn'])}
+        self.attr['dest_tep_ip']= str(attr['dest'])
+        self.attr['id']= str(attr['id'])
+        self.attr['oper_st'] = str(attr['operSt'])
+        self.attr['oper_st_qual'] = str(attr['operStQual'])
+        self.attr['context'] = str(attr['vrfName'])
+        self.attr['type'] = str(attr['type'])
+        self.attr['dn'] = str(attr['dn'])
+        self.name = self.attr['id']
 
-        if 'proxy-acast-mac' in tunnel['type']:
-            self.attr['proxy_ip_mac'] = tunnel['dest_tep_ip']
-        if 'proxy-acast-v4' in tunnel['type']:
-            self.attr['proxy_ip_v4'] = tunnel['dest_tep_ip']
-        if 'proxy-acast-v6' in tunnel['type']:
-            self.attr['proxy_ip_v6'] = tunnel['dest_tep_ip']
-        return tunnel
+    def update_proxy_in_parent(self):
+        """
+        Will update the proxy addresses in the parent object
+        """
+        if self._parent:
+            if 'proxy-acast-mac' in self.attr['type']:
+                self._parent.attr['proxy_ip_mac'] = str(self.attr['dest_tep_ip'])
+
+            if 'proxy-acast-v4' in self.attr['type']:
+                self._parent.attr['proxy_ip_v4'] = str(self.attr['dest_tep_ip'])
+            if 'proxy-acast-v6' in self.attr['type']:
+                self._parent.attr['proxy_ip_v6'] = str(self.attr['dest_tep_ip'])
+
+    @staticmethod
+    def get_table(tunnels, title=''):
+        """
+        Create print string for tunnel information
+        :param tunnels:
+        :param title:
+        """
+        result = []
+
+        headers = ['Tunnel', 'Context', 'Dest TEP IP', 'Type', 'Oper St',
+                   'Oper State Qualifier']
+        table = []
+        for tunnel in tunnels:
+            table.append([tunnel.attr.get('id', ''),
+                          tunnel.attr.get('context', ''),
+                          tunnel.attr.get('dest_tep_ip', ''),
+                          tunnel.attr.get('type', ''),
+                          tunnel.attr.get('oper_st', ''),
+                          tunnel.attr.get('oper_st_qual', '')])
+        result.append(Table(table, headers, title=title + 'Overlay Tunnels'))
+        return result
+
+    def __str__(self):
+        """
+        Default print string
+
+        :return: str
+        """
+        return 'ConcreteTunnel'
+
+    def __eq__(self, other):
+
+        """
+        Checks that the tunnels are equal
+        :param other:
+        :return: True if equal
+        """
+        if isinstance(other, self.__class__):
+            self_key = (self.get_parent(), self.attr.get('dn'))
+            other_key = (other.get_parent(), other.attr.get('dn'))
+            return self_key == other_key
+        return NotImplemented
+
+
+class ConcreteOverlay(CommonConcreteObject):
+    """
+    Will retrieve the overlay information for the switch
+    """
+
+    def __init__(self, parent=None):
+        """
+        overlay information
+        """
+        super(ConcreteOverlay, self).__init__(parent=parent)
+        self.attr['vpc_tep_ip'] = None
+        self.attr['src_tep_ip'] = None
+        self.attr['proxy_ip_mac'] = None
+        self.attr['proxy_ip_v4'] = None
+        self.attr['proxy_ip_v6'] = None
+        self.node = None
+
+    @staticmethod
+    def _get_parent_class():
+        """
+        Gets the acitoolkit class of the parent object
+        Meant to be overridden by inheriting classes.
+        Raises exception if not overridden.
+
+        :returns: class of parent object
+        """
+        return Node
+
+    @staticmethod
+    def _get_children_concrete_classes():
+        """
+        Get the acitoolkit class of the children of this object.
+        This is meant to be overridden by any inheriting classes that have children.
+        If they don't have children, this will return an empty list.
+        :return: list of classes
+        """
+        return [ConcreteTunnel]
+
+    @classmethod
+    def _get_apic_classes(cls):
+        """
+        Get the APIC classes used by this acitoolkit class.
+
+        :returns: list of strings containing APIC class names
+        """
+        resp = []
+
+        return resp
+
+    @classmethod
+    def get(cls, top, parent=None):
+        """
+        Gather all the Overlay information for a switch
+        The overlay object does not have a corresponding object in the APIC
+        so does not cause a direct read of the APIC itself.  The children,
+        tunnels, of the ConcreteOverlay are what trigger the read of the APIC.
+
+        :param parent:
+        :param top: the topSystem level json object
+        :returns: Single overlay object in a list
+        """
+        cls.check_parent(parent)
+        ovly = cls()
+        ovly._top = top
+        # Adding the VPC VTEP to the list to help figure Tunnel endpoints
+        if parent.vpc_info:
+            if parent.vpc_info['oper_state'] == 'active':
+                ovly.attr['vpc_tep_ip'] = str(parent.vpc_info['vtep_ip'].split('/')[0])
+        if parent:
+            ovly.attr['dn'] = str(parent.dn+'/overlay')
+            ovly._parent = parent
+            ovly._parent.add_child(ovly)
+            ovly.node = ovly._parent.node
+            ovly.pod = ovly._parent.pod
+        else:
+            ovly.attr['dn'] = '/overlay'
+
+        return [ovly]
 
     @staticmethod
     def get_table(overlay, title=''):
@@ -2671,51 +2612,28 @@ class ConcreteOverlay(BaseACIPhysObject):
             result.append(
                 Table(table, headers, title=title + 'Overlay Config', table_orientation='vertical', columns=1))
 
-            headers = ['Tunnel', 'Context', 'Dest TEP IP', 'Type', 'Oper St',
-                       'Oper State Qualifier']
-            table = []
-            for tunnel in ovly.tunnels:
-                table.append([tunnel.get('id', ''),
-                              tunnel.get('context', ''),
-                              tunnel.get('dest_tep_ip', ''),
-                              tunnel.get('type', ''),
-                              tunnel.get('oper_st', ''),
-                              tunnel.get('oper_st_qual', '')])
-            result.append(Table(table, headers, title=title + 'Overlay Tunnels'))
         return result
 
-    def _define_searchables(self):
-        """
-        Create all of the searchable terms
-
-        :rtype : list of Searchable
-        """
-        result = Searchable()
-        result.add_term('overlay')
-        if 'src_tep_ip' in self.attr:
-            result.add_term('ipv4', self.attr['src_tep_ip'])
-
-        if 'proxy_ip_v4' in self.attr:
-            result.add_term('ipv4', self.attr['proxy_ip_v4'], 'indirect')
-
-        if 'proxy_ip_v6' in self.attr:
-            result.add_term('ipv4', self.attr['proxy_ip_v6'], 'indirect')
-
-        if 'proxy_ip_mac' in self.attr:
-            result.add_term('ipv4', self.attr['proxy_ip_mac'], 'indirect')
-
-        for tunnel in self.tunnels:
-            result.add_term('tunnel')
-            if 'id' in tunnel:
-                result.add_term('id', tunnel['id'])
-
-            if 'context' in tunnel:
-                result.add_term('context', tunnel['context'])
-
-            if 'dest_tep_ip' in tunnel:
-                result.add_term('ipv4', tunnel['dest_tep_ip'], 'indirect')
-
-        return [result]
+    # def populate_children(self, deep=False, include_concrete=False):
+    #     """
+    #     Populates all of the children and then calls populate_children\
+    #     of those children if deep is True.  This method should be\
+    #     overridden by any object that does have children.
+    #
+    #     If include_concrete is True, then if the object has concrete objects
+    #     below it, i.e. is a switch, then also populate those conrete object.
+    #
+    #     :param include_concrete: True or False. Default is False
+    #     :param deep: True or False.  Default is False.
+    #     """
+    #     for child_class in self._get_children_classes():
+    #         child_class.get(self._top, self)
+    #
+    #     if deep:
+    #         for child in self._children:
+    #             child.populate_children(deep, include_concrete)
+    #
+    #     return self._children
 
     def __str__(self):
         """
@@ -2723,7 +2641,7 @@ class ConcreteOverlay(BaseACIPhysObject):
 
         :return: str
         """
-        return 'Concrete_Overlay'
+        return 'ConcreteOverlay'
 
     def __eq__(self, other):
 
@@ -2732,8 +2650,8 @@ class ConcreteOverlay(BaseACIPhysObject):
         :param other:
         :return: True if equal
         """
-        if type(self) != type(other):
-            return False
-        if self.get_parent() != other.get_parent():
-            return False
-        return self.attr.get('dn') == other.attr.get('dn')
+        if isinstance(other, self.__class__):
+            self_key = self.get_parent()
+            other_key = other.get_parent()
+            return self_key == other_key
+        return NotImplemented

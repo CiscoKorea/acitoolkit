@@ -29,16 +29,20 @@
 ################################################################################
 """ACI Toolkit module for physical objects
 """
-import datetime
-from operator import attrgetter, itemgetter
-from .acibaseobject import BaseACIObject, BaseACIPhysModule, BaseInterface
-from .aciConcreteLib import *
-from .acisession import Session
-from .acicounters import AtomicCountersOnGoing, InterfaceStats
-import logging
-import re
 import copy
+import logging
+from operator import attrgetter, itemgetter
+import re
+
+from .acibaseobject import (
+    BaseACIObject, BaseACIPhysModule, BaseACIPhysObject, BaseInterface
+)
+from .acicounters import AtomicCountersOnGoing, InterfaceStats
 from .aciSearch import Searchable
+from .acisession import Session
+from .aciTable import Table
+# TODO: resolve circular dependency and import only LogicalModel
+import acitoolkit as ACI
 
 
 class Systemcontroller(BaseACIPhysModule):
@@ -156,7 +160,6 @@ class Systemcontroller(BaseACIPhysModule):
         if self.type == 'unknown':
             self.type = 'systemctrlcard'
 
-
 class Cluster(BaseACIObject):
     """
     Represents the global settings of the Cluster
@@ -170,37 +173,52 @@ class Cluster(BaseACIObject):
         self.name = name
         self.config_size = None
         self.cluster_size = None
-        self.cluster_info = None
+        self.apics = []
+
+    def get(self, session, parent=None):
+        """Gets all of the Clusters from the APIC.                                                                                       
+                                                                                                                                         
+        :returns: list of Clusterss.                                                                                                     
+        """
+        # start at top                                                                                                                   
+        infra_query_url = '/api/node/class/infraCont.json'
+        ret = session.get(infra_query_url)
+        cluster_info = ret.json()['imdata']
+        infra_cluster_url = '/api/node/class/infraClusterPol.json'
+        ret = session.get(infra_cluster_url)
+        ret_cluster= ret.json()['imdata']
+        self.config_size=ret_cluster[0]['infraClusterPol']['attributes']['size']
+        for apic in cluster_info:
+            self.apics.append(apic['infraCont']['attributes']['dn'])
+        self._populate_from_attributes(cluster_info[0]['infraCont']['attributes'])
+        return cluster_info
+
+    def _populate_from_attributes(self, attributes):
+        """"Fills in an object with desired attributes.                                                                                  
+        """
+        self.cluster_size=str(attributes['size'])
+        self.name=str(attributes['fbDmNm'])
+
+
 
     def get_config_size(self, session):
         """
+
+        :param session:
         :returns: configured size of the cluster, i.e. # of APICs
         """
-        if self.config_size is None:
-            infra_cluster_url = '/api/node/class/infraClusterPol.json'
-            ret = session.get(infra_cluster_url)
-            ret_cluster= ret.json()['imdata']
-            self.config_size=ret_cluster[0]['infraClusterPol']['attributes']['size']
-            
         return self.config_size
 
     def get_cluster_size(self, session):
-        if self.cluster_size is None:
-            infra_query_url = '/api/node/class/infraCont.json'
-            ret = session.get(infra_query_url)
-            self.cluster_info=ret.json()['imdata']
-            self.cluster_size = self.cluster_info[0]['infraCont']['attributes']['size']
+        """
+        reads information about the APIC cluster
+        :param session:
+        :return:
+        """
         return self.cluster_size
 
-    def get_cluster_info(self, session):
-        if self.cluster_info is None:
-            infra_query_url = '/api/node/class/infraCont.json'
-            ret = session.get(infra_query_url)
-            self.cluster_info=ret.json()['imdata']
-            self.cluster_size = self.cluster_info[0]['infraCont']['attributes']['size']
-        return self.cluster_info
-
-
+    def get_apics(self):
+        return self.apics
 
 
 class Linecard(BaseACIPhysModule):
@@ -339,22 +357,22 @@ class Linecard(BaseACIPhysModule):
         result.append(Table(table, headers, title=super_title + 'Linecards'))
         return result
 
-    def _define_searchables(self):
-        """
-        Create all of the searchable terms
-
-        :rtype : list of Searchable
-        """
-        results = super(Linecard, self)._define_searchables()
-
-        for result in results:
-            if self.hardware_version is not None:
-                result.add_term('version', self.hardware_version)
-
-            if self.hardware_revision is not None:
-                result.add_term('revision', self.hardware_revision)
-
-        return results
+    # def _define_searchables(self):
+    #     """
+    #     Create all of the searchable terms
+    #
+    #     :rtype : list of Searchable
+    #     """
+    #     results = super(Linecard, self)._define_searchables()
+    #
+    #     for result in results:
+    #         if self.hardware_version is not None:
+    #             result.add_term('version', self.hardware_version)
+    #
+    #         if self.hardware_revision is not None:
+    #             result.add_term('revision', self.hardware_revision)
+    #
+    #     return results
 
 
 class Supervisorcard(BaseACIPhysModule):
@@ -462,23 +480,23 @@ class Supervisorcard(BaseACIPhysModule):
         result.append(Table(table, headers, title=super_title + 'Supervisors'))
         return result
 
-    def _define_searchables(self):
-        """
-        Create all of the searchable terms
-
-        :rtype : list of Searchable
-        """
-
-        results = super(Supervisorcard, self)._define_searchables()
-
-        for result in results:
-            if self.hardware_version is not None:
-                result.add_term('version', self.hardware_version)
-
-            if self.hardware_revision is not None:
-                result.add_term('revision', self.hardware_revision)
-
-        return results
+    # def _define_searchables(self):
+    #     """
+    #     Create all of the searchable terms
+    #
+    #     :rtype : list of Searchable
+    #     """
+    #
+    #     results = super(Supervisorcard, self)._define_searchables()
+    #
+    #     for result in results:
+    #         if self.hardware_version is not None:
+    #             result.add_term('version', self.hardware_version)
+    #
+    #         if self.hardware_revision is not None:
+    #             result.add_term('revision', self.hardware_revision)
+    #
+    #     return results
 
 
 class Fantray(BaseACIPhysModule):
@@ -562,9 +580,13 @@ class Fantray(BaseACIPhysModule):
         self.name = str(attributes.get('fanName', 'None'))
         self.status = str(attributes['status'])
         self.modify_time = str(attributes['modTs'])
+        self.id = str(attributes['id'])
+        (pod, node, slot) = self._parse_dn(self.dn)
+        self.pod = pod
+        self.node = node
+        self.slot = slot
 
-    @staticmethod
-    def _get_firmware(dist_name):
+    def _get_firmware(self, dist_name):
         """ Returns None for firmware and bios revisions"""
         return None, None
 
@@ -624,7 +646,6 @@ class Fan(BaseACIPhysModule):
     def __init__(self, parent=None):
         """ Initialize the basic fan.
 
-            :param identifier: fan id - optional
             :param parent: optional parent Fantray object
             """
         self.type = 'fan'
@@ -692,14 +713,7 @@ class Fan(BaseACIPhysModule):
         if node_data:
             for fan_obj in node_data:
                 fan = Fan()
-                fan.dn = str(fan_obj['eqptFan']['attributes']['dn'])
-                fan.id = str(fan_obj['eqptFan']['attributes']['id'])
-                fan.descr = str(fan_obj['eqptFan']['attributes']['descr'])
-                fan.oper_st = str(fan_obj['eqptFan']['attributes']['operSt'])
-                fan.direction = str(fan_obj['eqptFan']['attributes']['dir'])
-                fan.model = str(fan_obj['eqptFan']['attributes']['model'])
-                fan.serial = str(fan_obj['eqptFan']['attributes']['ser'])
-
+                fan._populate_from_attributes(fan_obj['eqptFan']['attributes'])
                 # now get speed if it is being monitored
                 mo_query_url = '/api/mo/' + fan.dn + \
                                '.json?rsp-subtree-include=stats&rsp-subtree-class=eqptFanStats5min'
@@ -712,8 +726,8 @@ class Fan(BaseACIPhysModule):
                             if stat_data[0]['eqptFan']['children']:
                                 if 'eqptFanStats5min' in stat_data[0]['eqptFan']['children'][0]:
                                     fan.speed = \
-                                        str(stat_data[0]['eqptFan']['children'][0]['eqptFanStats5min']['attributes'][
-                                                'speedLast'])
+                                        str(stat_data[0]['eqptFan']['children'][0]
+                                            ['eqptFanStats5min']['attributes']['speedLast'])
 
                 if parent:
                     fan._parent = parent
@@ -721,15 +735,31 @@ class Fan(BaseACIPhysModule):
                 fans.append(fan)
         return fans
 
+    def _populate_from_attributes(self, attributes):
+        """Fills in an object with the desired attributes.
+           Overridden by inheriting classes to provide the specific attributes
+           when getting objects from the APIC.
+        """
+        self.dn = str(attributes['dn'])
+        self.id = str(attributes['id'])
+        self.descr = str(attributes['descr'])
+        self.oper_st = str(attributes['operSt'])
+        self.direction = str(attributes['dir'])
+        self.model = str(attributes['model'])
+        self.serial = str(attributes['ser'])
+        self.name = 'fan-{0}'.format(self.id)
+        (pod, node, slot) = self._parse_dn(self.dn)
+        self.pod = pod
+        self.node = node
+        self.slot = slot
+
     def __eq__(self, other):
         """compares two fans and returns True if they are the same.
         """
-        if type(self) == type(other):
-            if self.model == other.model:
-                if self.id == other.id:
-                    if self._parent == other._parent:
-                        return True
-        return False
+        if isinstance(other, self.__class__):
+            key_attrs = attrgetter('model', 'id', '_parent')
+            return key_attrs(self) == key_attrs(other)
+        return NotImplemented
 
     def __str__(self):
         """
@@ -737,7 +767,7 @@ class Fan(BaseACIPhysModule):
 
         :return: str
         """
-        return 'Fan-'+self.id
+        return 'Fan-' + self.id
 
     @staticmethod
     def get_table(modules, title=''):
@@ -755,7 +785,7 @@ class Fan(BaseACIPhysModule):
                           fan.oper_st,
                           fan.direction,
                           fan.speed,
-                              fan.serial])
+                          fan.serial])
 
         result.append(Table(table, headers, title=title + 'Fan Trays'))
         return result
@@ -868,22 +898,22 @@ class Powersupply(BaseACIPhysModule):
         result.append(Table(table, headers, title=super_title + 'Power Supplies'))
         return result
 
-    def _define_searchables(self):
-        """
-        Create all of the searchable terms
-
-        :rtype : list of Searchable
-        """
-        results = super(Powersupply, self)._define_searchables()
-        for result in results:
-            if self.hardware_version is not None:
-                result.add_term('version', self.hardware_version)
-            if self.hardware_revision is not None:
-                result.add_term('revision', self.hardware_revision)
-            if self.voltage_source is not None:
-                result.add_term('voltage', self.voltage_source)
-
-        return results
+    # def _define_searchables(self):
+    #     """
+    #     Create all of the searchable terms
+    #
+    #     :rtype : list of Searchable
+    #     """
+    #     results = super(Powersupply, self)._define_searchables()
+    #     for result in results:
+    #         if self.hardware_version is not None:
+    #             result.add_term('version', self.hardware_version)
+    #         if self.hardware_revision is not None:
+    #             result.add_term('revision', self.hardware_revision)
+    #         if self.voltage_source is not None:
+    #             result.add_term('voltage', self.voltage_source)
+    #
+    #     return results
 
 
 class Pod(BaseACIPhysObject):
@@ -974,9 +1004,9 @@ class Pod(BaseACIPhysObject):
         return pods
 
     def __eq__(self, other):
-        if type(self) is not type(other):
-            return False
-        return self.pod == other.pod
+        if isinstance(other, self.__class__):
+            return self.pod == other.pod
+        return NotImplemented
 
     def __str__(self):
         return self.name
@@ -1014,7 +1044,7 @@ class Node(BaseACIPhysObject):
         self.macAddress = None
         self.state = None
         self.mode = None
-        self.operSt = None
+        self.oper_st = None
         self.operStQual = None
         self.descr = None
         self.model = None
@@ -1073,18 +1103,25 @@ class Node(BaseACIPhysObject):
         If they don't have children, this will return an empty list.
         :return: list of classes
         """
+        # TODO: resolve circular dependency
+        from .aciConcreteLib import (
+            ConcreteAccCtrlRule, ConcreteArp, ConcreteBD, ConcreteContext,
+            ConcreteEp, ConcreteFilter, ConcreteLoopback, ConcreteOverlay,
+            ConcretePortChannel, ConcreteVpc
+        )
+
         return [ConcreteArp, ConcreteAccCtrlRule, ConcreteBD, ConcreteOverlay,
                 ConcretePortChannel, ConcreteEp, ConcreteFilter, ConcreteLoopback,
-                ConcreteContext, ConcreteSVI, ConcreteVpc]
+                ConcreteContext, ConcreteVpc]
 
     @classmethod
     def _get_apic_classes(cls):
         """gets list of all apic classes used to build this acitoolkit class
         """
-        resp = ['fabricNode','firmwareCardRunning', 'topSystem', 'vpcInst','vpcDom',
-                'eqptCh','l1PhysIf','eqptFtSlot','eqptLCSlot','eqptPsuSlot',
-                'eqptSupCSlot','topoctrlLbP',
-                #'topoctrlVxlanP'
+        resp = ['fabricNode', 'firmwareCardRunning', 'topSystem', 'vpcInst', 'vpcDom',
+                'eqptCh', 'l1PhysIf', 'eqptFtSlot', 'eqptLCSlot', 'eqptPsuSlot',
+                'eqptSupCSlot', 'topoctrlLbP',
+                # 'topoctrlVxlanP'
                 ]
         return resp
 
@@ -1142,8 +1179,13 @@ class Node(BaseACIPhysObject):
         else:
             pod_id = '1'
 
-        if isinstance(node_id, unicode):
-            node_id = str(node_id)
+        try:
+            if isinstance(node_id, unicode):
+                node_id = str(node_id)
+        # In Python3 there is no unicode type
+        except NameError:
+            if isinstance(node_id, str):
+                node_id = str(node_id)
 
         if node_id:
             if not isinstance(node_id, str):
@@ -1157,19 +1199,18 @@ class Node(BaseACIPhysObject):
         else:
             class_url = '/api/node/class/fabricNode.json?'
             ret = session.get(class_url)
-            ret._content = ret._content.replace('\n', '')
+            ret._content = ret._content.decode().replace('\n', '').encode()
             data = ret.json()['imdata']
             working_data = WorkingData()
             for item in data:
                 if 'fabricNode' in item:
                     if 'role' in item['fabricNode']['attributes']:
-                        if item['fabricNode']['attributes']['role'] in ['leaf', 'spine',  'controller']:
-
+                        if item['fabricNode']['attributes']['role'] in ['leaf', 'spine', 'controller']:
                             node_dn = item['fabricNode']['attributes']['dn']
                             base_url = '/api/mo/' + node_dn + '.json?'
                             working_data.add(session, Node, base_url)
 
-            # base_url = '/api/mo/topology/pod-{0}.json?'.format(pod_id)
+                            # base_url = '/api/mo/topology/pod-{0}.json?'.format(pod_id)
 
         nodes = []
         data = working_data.get_class('fabricNode')
@@ -1221,6 +1262,7 @@ class Node(BaseACIPhysObject):
     def get_firmware(self, working_data):
         """
         retrieves firmware version
+        :param working_data:
         """
         if self.role != 'controller':
             dn = self.dn + '/sys/ch/supslot-1/sup/running'
@@ -1241,9 +1283,9 @@ class Node(BaseACIPhysObject):
             if data:
                 if 'topSystem' in data[0]:
                     if 'children' in data[0]['topSystem']:
-                        if 'fabricNodeHealth5Min' in data[0]['topSystem']['children'][0]:
-                            self.health = data[0]['topSystem']['children'][0]['fabricNodeHealth5min']\
-                                ['attributes']['healthLast']
+                        ts_child = data[0]['topSystem']['children']
+                        if 'fabricNodeHealth5Min' in ts_child[0]:
+                            self.health = ts_child[0]['fabricNodeHealth5min']['attributes']['healthLast']
 
     def _add_vpc_info(self, working_data):
         """
@@ -1258,7 +1300,7 @@ class Node(BaseACIPhysObject):
         then get vpcDom under vpcInst
 
         peer_present is true if vpcDom exists
-        
+
         From vpcDom get :
             domain_id
             system_mac
@@ -1271,7 +1313,6 @@ class Node(BaseACIPhysObject):
             vtep_ip
             vtep_mac
             oper_role
-            
         """
         partial_dn = 'topology/pod-{0}/node-{1}/sys/vpc/inst'.format(self.pod, self.node)
 
@@ -1306,27 +1347,25 @@ class Node(BaseACIPhysObject):
         self.vpc_info = result
 
     def __eq__(self, other):
-        if type(self) is not type(other):
-            return False
-        return (self.pod == other.pod) and \
-               (self.node == other.node) and \
-               (self.name == other.name) and \
-               (self.role == other.role)
+        if isinstance(other, self.__class__):
+            key_attrs = attrgetter('pod', 'node', 'name', 'role')
+            return key_attrs(self) == key_attrs(other)
+        return NotImplemented
 
     def _populate_from_attributes(self, attributes):
         """Fills in an object with the desired attributes.
         """
-        self.serial = attributes['serial']
-        self.model = attributes['model']
-        self.dn = attributes['dn']
-        self.vendor = attributes['vendor']
-        self.fabricSt = attributes['fabricSt']
-        self.modify_time = attributes['modTs']
+        self.serial = str(attributes['serial'])
+        self.model = str(attributes['model'])
+        self.dn = str(attributes['dn'])
+        self.vendor = str(attributes['vendor'])
+        self.fabricSt = str(attributes['fabricSt'])
+        self.modify_time = str(attributes['modTs'])
 
     def _get_topsystem_info(self, working_data):
         """ will read in topSystem object to get more information about Node"""
 
-        node_data = working_data.get_object(self.dn+'/sys')
+        node_data = working_data.get_object(self.dn + '/sys')
         if node_data is not None:
             if 'topSystem' in node_data:
 
@@ -1340,55 +1379,59 @@ class Node(BaseACIPhysObject):
                 self.system_uptime = str(node_data['topSystem']['attributes'].get('systemUpTime'))
 
                 # now get eqptCh for even more info
-                node_data = working_data.get_object(self.dn+'/sys/ch')
+                node_data = working_data.get_object(self.dn + '/sys/ch')
                 if node_data:
                     if 'eqptCh' in node_data:
-                        self.operSt = str(node_data['eqptCh']['attributes']['operSt'])
+                        self.oper_st = str(node_data['eqptCh']['attributes']['operSt'])
                         self.operStQual = str(node_data['eqptCh']['attributes']['operStQual'])
                         self.descr = str(node_data['eqptCh']['attributes']['descr'])
 
                 # get the total number of ports = number of l1PhysIf
-                node_data = working_data.get_subtree('l1PhysIf', self.dn+ '/sys')
+                node_data = working_data.get_subtree('l1PhysIf', self.dn + '/sys')
                 if node_data:
-                    self.num_ports = len(node_data)
+                    self.num_ports = str(len(node_data))
 
                 # get the total number of ports = number of fan slots
-                node_data = working_data.get_subtree('eqptFtSlot', self.dn+'/sys')
+                node_data = working_data.get_subtree('eqptFtSlot', self.dn + '/sys')
                 if node_data:
-                    self.num_fan_slots = len(node_data)
+                    self.num_fan_slots = str(len(node_data))
 
                 self.num_fan_modules = 0
                 if node_data:
                     for slot in node_data:
                         if slot['eqptFtSlot']['attributes']['operSt'] == 'inserted':
                             self.num_fan_modules += 1
+                self.num_fan_modules = str(self.num_fan_modules)
 
                 # get the total number of ports = number of linecard slots
                 node_data = working_data.get_subtree('eqptLCSlot', self.dn + '/sys/ch')
-                self.num_lc_slots = len(node_data)
+                self.num_lc_slots = str(len(node_data))
                 self.num_lc_modules = 0
                 if node_data:
                     for slot in node_data:
                         if slot['eqptLCSlot']['attributes']['operSt'] == 'inserted':
                             self.num_lc_modules += 1
+                self.num_lc_modules = str(self.num_lc_modules)
 
                 # get the total number of ports = number of power supply slots
                 node_data = working_data.get_subtree('eqptPsuSlot', self.dn + '/sys/ch')
-                self.num_ps_slots = len(node_data)
+                self.num_ps_slots = str(len(node_data))
                 self.num_ps_modules = 0
                 if node_data:
                     for slot in node_data:
                         if slot['eqptPsuSlot']['attributes']['operSt'] == 'inserted':
                             self.num_ps_modules += 1
+                self.num_ps_modules = str(self.num_ps_modules)
 
                 # get the total number of ports = number of supervisor slots
                 node_data = working_data.get_subtree('eqptSupCSlot', self.dn + '/sys/ch')
-                self.num_sup_slots = len(node_data)
+                self.num_sup_slots = str(len(node_data))
                 self.num_sup_modules = 0
                 if node_data:
                     for slot in node_data:
                         if slot['eqptSupCSlot']['attributes']['operSt'] == 'inserted':
                             self.num_sup_modules += 1
+                self.num_sup_modules = str(self.num_sup_modules)
 
                 # get dynamic load balancing config
                 self.dynamic_load_balancing_mode = 'unknown'
@@ -1401,10 +1444,18 @@ class Node(BaseACIPhysObject):
                 # get vxlan info
                 self.ivxlan_udp_port = 'unknown'
 
-                #node_data = working_data.get_subtree('topoctrlVxlanP', self.dn + '/sys')
-                #for info in node_data:
-                #    if 'topoctrlVxlanP' in info:
-                #        self.ivxlan_udp_port = info['topoctrlVxlanP']['attributes']['udpPort']
+                # node_data = working_data.get_subtree('topoctrlVxlanP', self.dn + '/sys')
+                # for info in node_data:
+                #     if 'topoctrlVxlanP' in info:
+                #         self.ivxlan_udp_port = info['topoctrlVxlanP']['attributes']['udpPort']
+
+    @property
+    def operSt(self):
+        """
+        changed value to "oper_st" so this makes the class backward compatible
+        :return:
+        """
+        return self.oper_st
 
     def populate_children(self, deep=False, include_concrete=False):
         """Will populate all of the children modules such as
@@ -1424,11 +1475,11 @@ class Node(BaseACIPhysObject):
 
         if include_concrete and self.role != 'controller':
             # todo: currently only have concrete model for switches - need to add controller
-            query_url = '/api/mo/topology/pod-' +self.pod + '/node-' + self.node + \
+            query_url = '/api/mo/topology/pod-' + self.pod + '/node-' + self.node + \
                         '/sys.json?'
 
             working_data = WorkingData(session, Node, query_url, deep=True, include_concrete=True)
-            for concrete_class in self._get_children_concrete_classes() :
+            for concrete_class in self._get_children_concrete_classes():
                 concrete_class.get(working_data, self)
 
         if deep:
@@ -1446,7 +1497,7 @@ class Node(BaseACIPhysObject):
         :returns: chassis type of node of type str
         """
         if self.model:
-            fields = re.split('-', self.model)
+            fields = self.model.split('-')
             chassis_type = fields[0].lower()
         else:
             chassis_type = None
@@ -1520,22 +1571,24 @@ class Node(BaseACIPhysObject):
 
         :rtype : list of Searchable
         """
-        search_terms = []
-        if self.name:
-            search_terms.append(('name', self.name))
-            search_terms.append(('switch', self.name))
-        if self.node:
-            search_terms.append(('switch', self.node))
-        if self.serial:
-            search_terms.append(('serial', self.serial))
-        if self.model:
-            search_terms.append(('model', self.model))
-        if self.firmware:
-            search_terms.append(('firmware', self.firmware))
-        if self.role:
-            search_terms.append(('role', self.role))
+        results = super(Node, self)._define_searchables()
 
-        return [Searchable(search_terms)]
+        if self.role != 'controller':
+            results[0].add_term('switch', self.name)
+            results[0].add_term('switch', self.node)
+        else:
+            results[0].add_term('controller', self.name)
+            results[0].add_term('controller', self.node)
+            results[0].add_term('apic', self.name)
+            results[0].add_term('apic', self.node)
+
+        results[0].add_term('ipv4', self.inb_mgmt_ip)
+        results[0].add_term('ipv4', self.oob_mgmt_ip)
+        results[0].add_term('ipv4', str(self.tep_ip))
+        results[0].add_term('management', self.inb_mgmt_ip)
+        results[0].add_term('management', self.oob_mgmt_ip)
+
+        return results
 
 
 class ExternalSwitch(BaseACIPhysObject):
@@ -1746,7 +1799,7 @@ class ExternalSwitch(BaseACIPhysObject):
                 pod = name[1].split('-')[1]
                 node = str(name[2].split('-')[1])
                 if 'phys' in name[4]:
-                    result = re.search('phys-\[(.+)\]', dn)
+                    result = re.search(r'phys-\[(.+)\]', dn)
                     lldp_dn = 'topology/pod-' + pod + '/node-' + \
                               node + '/sys/lldp/inst/if-[' + result.group(1) + ']/adj-1'
                 else:
@@ -1789,9 +1842,9 @@ class ExternalSwitch(BaseACIPhysObject):
         self.state = 'unknown'
 
     def __eq__(self, other):
-        if type(self) is not type(other):
-            return False
-        return self.name == other.name
+        if isinstance(other, self.__class__):
+            return self.name == other.name
+        return NotImplemented
 
 
 class Link(BaseACIPhysObject):
@@ -1916,6 +1969,12 @@ class Link(BaseACIPhysObject):
         (pod, link) = Link._parse_dn(self.dn)
         self.pod = pod
         self.link = link
+        self.name = 'n{0}/s{1}/p{2}_n{3}/s{4}/p{5}'.format(self.node1,
+                                                      self.slot1,
+                                                      self.port1,
+                                                      self.node2,
+                                                      self.slot2,
+                                                      self.port2)
 
     def __str__(self):
         text = 'n%s/s%s/p%s-n%s/s%s/p%s' % (self.node1, self.slot1,
@@ -1927,11 +1986,10 @@ class Link(BaseACIPhysObject):
         same and the end points match.  The link ids are not
         checked.
         """
-
-        if type(self) is not type(other):
-            return False
-        return (self.pod == other.pod) and (self.node1 == other.node1) \
-               and (self.slot1 == other.slot1) and (self.port1 == other.port1)
+        if isinstance(other, self.__class__):
+            key_attrs = attrgetter('pod', 'node1', 'slot1', 'port1')
+            return key_attrs(self) == key_attrs(other)
+        return NotImplemented
 
     def get_node1(self):
         """Returns the Node object that corresponds to the first
@@ -1943,14 +2001,7 @@ class Link(BaseACIPhysObject):
 
         :returns: Node object at first end of link
         """
-
-        if not self._parent:
-            raise TypeError("Parent pod must be specified in order to get node")
-
-        nodes = self._parent.get_children(Node)
-        for node in nodes:
-            if node.node == self.node1:
-                return node
+        return self._get_node(1)
 
     def get_node2(self):
         """Returns the Node object that corresponds to the
@@ -1962,15 +2013,18 @@ class Link(BaseACIPhysObject):
 
         :returns: Node object at second end of link
         """
+        return self._get_node(2)
 
+    def _get_node(self, node_number):
+        """Common implementation of get_node1() and get_node2()"""
         if not self._parent:
             raise TypeError("Parent pod must be specified in order to get node")
-
-        nodes = self._parent.get_children(Node)
-        for node in nodes:
-            if node.node == self.node2:
-                return node
-        return None
+        target_node = {1: self.node1, 2: self.node2}[node_number]
+        matching_nodes = (
+            node for node in self._parent.get_children(Node)
+            if node.node == target_node
+        )
+        return next(matching_nodes, None)
 
     def get_slot1(self):
         """Returns the Linecard object that corresponds to the
@@ -1982,16 +2036,7 @@ class Link(BaseACIPhysObject):
 
         :returns: Linecard object at first end of link
         """
-
-        if not self._parent:
-            raise TypeError("Parent pod must be specified in order to get node")
-        node = self.get_node1()
-        if node:
-            linecards = node.get_children(Linecard)
-            for linecard in linecards:
-                if linecard.slot == self.slot1:
-                    return linecard
-        return None
+        return self._get_slot(1)
 
     def get_slot2(self):
         """Returns the Linecard object that corresponds to the
@@ -2003,19 +2048,22 @@ class Link(BaseACIPhysObject):
 
         :returns: Linecard object at second end of link
         """
+        return self._get_slot(2)
 
+    def _get_slot(self, slot_number):
+        """Common implementation of get_slot1() and get_slot2()"""
         if not self._parent:
             raise TypeError("Parent pod must be specified in order to get node")
-        node = self.get_node2()
-        if node:
-            linecards = node.get_children(Linecard)
-            for linecard in linecards:
-                if linecard.slot == self.slot2:
-                    return linecard
-        return None
+        target_slot = {1: self.slot1, 2: self.slot2}[slot_number]
+        node = self._get_node(slot_number)
+        linecards = node.get_children(Linecard) if node else ()
+        matching_linecards = (
+            linecard for linecard in linecards if linecard.slot == target_slot
+        )
+        return next(matching_linecards, None)
 
     def get_port1(self):
-        """Returns the Linecard object that corresponds to the
+        """Returns the Interface object that corresponds to the
         first port of the link.  The port must be a child of
         the Linecard in the Node in the Pod that this link is a
         member of, i.e. it must already have been read from the APIC.  This can
@@ -2024,20 +2072,11 @@ class Link(BaseACIPhysObject):
 
         :returns: Interface object at first end of link
         """
-
-        if not self._parent:
-            raise TypeError("Parent pod must be specified in order to get node")
-        linecard = self.get_slot1()
-        if linecard:
-            interfaces = linecard.get_children(Interface)
-            for interface in interfaces:
-                if interface.port == self.port1:
-                    return interface
-        return None
+        return self._get_port(1)
 
     def get_port2(self):
         """
-        Returns the Linecard object that corresponds to the second port of
+        Returns the Interface object that corresponds to the second port of
         the link. The port must be a child of the Linecard in the Node in
         the Pod that this link is a member of, i.e. it must already have been
         read from the APIC.  This can most easily be done by populating the
@@ -2045,16 +2084,20 @@ class Link(BaseACIPhysObject):
 
         :returns: Interface object at second end of link
         """
+        return self._get_port(2)
+
+    def _get_port(self, port_number):
+        """Common implementation of get_port1() and get_port2()"""
         if not self._parent:
-            raise TypeError(("Parent pod must be specified in "
-                             "order to get node"))
-        linecard = self.get_slot2()
-        if linecard:
-            interfaces = linecard.get_children(Interface)
-            for interface in interfaces:
-                if interface.port == self.port2:
-                    return interface
-        return None
+            raise TypeError("Parent pod must be specified in order to get node")
+        target_port = {1: self.port1, 2: self.port2}[port_number]
+        linecard = self._get_slot(port_number)
+        interfaces = linecard.get_children(Interface) if linecard else ()
+        matching_interfaces = (
+            interface for interface in interfaces
+            if interface.port == target_port
+        )
+        return next(matching_interfaces, None)
 
     def get_port_id1(self):
         """
@@ -2106,15 +2149,9 @@ class Interface(BaseInterface):
         self.node = str(node)
         self.module = str(module)
         self.port = str(port)
-        self.attributes['interface_type'] = str(interface_type)
-        self.attributes['pod'] = str(pod)
-        self.attributes['node'] = str(node)
-        self.attributes['module'] = str(module)
-        self.attributes['port'] = str(port)
 
         self.if_name = self.interface_type + ' ' + self.pod + '/'
         self.if_name += self.node + '/' + self.module + '/' + self.port
-        self.attributes['if_name'] = self.if_name
         super(Interface, self).__init__(self.if_name, None)
         self.porttype = ''
         self.adminstatus = ''  # up or down
@@ -2129,7 +2166,14 @@ class Interface(BaseInterface):
         self._parent = parent
         if parent:
             self._parent.add_child(self)
-        self.stats = InterfaceStats(self, self.attributes.get('dist_name'))
+        self.stats = InterfaceStats(self, self.attributes.get('dn'))
+
+        self.attributes['interface_type'] = str(interface_type)
+        self.attributes['pod'] = str(pod)
+        self.attributes['node'] = str(node)
+        self.attributes['module'] = str(module)
+        self.attributes['port'] = str(port)
+        self.attributes['if_name'] = self.if_name
 
     def is_interface(self):
         """
@@ -2236,7 +2280,7 @@ class Interface(BaseInterface):
         # Physical Domain json
         vlan_ns_dn = 'uni/infra/vlanns-allvlans-static'
         vlan_ns_ref = {'infraRsVlanNs': {'attributes':
-                                             {'tDn': vlan_ns_dn},
+                                         {'tDn': vlan_ns_dn},
                                          'children': []}}
         phys_domain = {'physDomP': {'attributes': {'name': 'allvlans'},
                                     'children': [vlan_ns_ref]}}
@@ -2284,7 +2328,7 @@ class Interface(BaseInterface):
         phys_dom_dn = 'uni/phys-allvlans'
         rs_dom_p = {'infraRsDomP': {'attributes': {'tDn': phys_dom_dn}}}
         infra_att_entity_p = {'infraAttEntityP': {'attributes':
-                                                      {'name': 'allvlans'},
+                                                  {'name': 'allvlans'},
                                                   'children': [rs_dom_p]}}
         infra['infraInfra']['children'].append(infra_att_entity_p)
 
@@ -2309,16 +2353,16 @@ class Interface(BaseInterface):
             else:
                 adminstatus_attributes['lc'] = 'blacklist'
             adminstatus_json = {'fabricRsOosPath':
-                                    {'attributes': adminstatus_attributes,
-                                     'children': []}}
+                                {'attributes': adminstatus_attributes,
+                                 'children': []}}
             fabric = {'fabricOOServicePol': {'children': [adminstatus_json]}}
 
         fvns_encap_blk = {'fvnsEncapBlk': {'attributes': {'name': 'encap',
                                                           'from': 'vlan-1',
                                                           'to': 'vlan-4092'}}}
         fvns_vlan_inst_p = {'fvnsVlanInstP': {'attributes':
-                                                  {'name': 'allvlans',
-                                                   'allocMode': 'static'},
+                                              {'name': 'allvlans',
+                                               'allocMode': 'static'},
                                               'children': [fvns_encap_blk]}}
         infra['infraInfra']['children'].append(fvns_vlan_inst_p)
 
@@ -2487,6 +2531,9 @@ class Interface(BaseInterface):
         If the pod, node, module and port are specified, then only that
         specific interface is read.
 
+        If the pod and node are specified, then only those interfaces are
+        read
+
         :param session: the instance of Session used for APIC communication
         :param pod_parent: Linecard instance to limit interfaces or pod\
                            number (optional)
@@ -2514,9 +2561,14 @@ class Interface(BaseInterface):
             if not isinstance(pod_parent, str):
                 raise TypeError(('When specifying a specific port, the pod '
                                  'must be identified by a string'))
+        # Handle case where only node is specified
+        elif node:
+            if not isinstance(pod_parent, str):
+                raise TypeError(('When specifying a specific node, the pod '
+                                 'must be identified by a string'))
         else:
             if pod_parent:
-                if not isinstance(pod_parent, cls._get_parent_class()):
+                if not isinstance(pod_parent,  cls._get_parent_class()):
                     raise TypeError('Interface parent must be a {0} object'.format(cls._get_parent_class()))
 
         cdp_policies = Interface._get_discoveryprot_policies(session, 'cdp')
@@ -2526,6 +2578,12 @@ class Interface(BaseInterface):
             dist_name = 'topology/pod-{0}/node-{1}/sys/phys-[eth{2}/{3}]'.format(pod_parent, node, module, port)
             interface_query_url = ('/api/mo/' + dist_name + '.json?query-target=self')
             eth_query_url = ('/api/mo/' + dist_name + '/phys.json?query-target=self')
+        # add the case where we return all of the ports of a given node
+        elif node:
+            dist_name = 'topology/pod-1/node-{0}/sys'.format(node)
+            interface_query_url = ('/api/mo/' + dist_name + '.json?query-target=children&target-subtree-class=l1PhysIf')
+            eth_query_url = ('/api/mo/' + dist_name + '.json?query-target=subtree&target-subtree-class=ethpmPhysIf')
+
         else:
             interface_query_url = '/api/node/class/l1PhysIf.json?query-target=self'
             eth_query_url = '/api/node/class/ethpmPhysIf.json?query-target=self'
@@ -2547,7 +2605,8 @@ class Interface(BaseInterface):
             if 'l1PhysIf' in interface:
                 attributes = {}
                 dist_name = str(interface['l1PhysIf']['attributes']['dn'])
-                attributes['dist_name'] = dist_name
+                attributes['dn'] = dist_name
+
                 porttype = str(interface['l1PhysIf']['attributes']['portT'])
                 attributes['porttype'] = porttype
                 adminstatus = str(interface['l1PhysIf']['attributes']['adminSt'])
@@ -2564,11 +2623,6 @@ class Interface(BaseInterface):
                 attributes['usage'] = str(interface['l1PhysIf']['attributes']['usage'])
                 (interface_type, pod, node,
                  module, port) = Interface.parse_dn(dist_name)
-                attributes['interface_type'] = interface_type
-                attributes['pod'] = pod
-                attributes['node'] = node
-                attributes['module'] = module
-                attributes['port'] = port
                 attributes['operSt'] = eth_data_dict[dist_name + '/phys']['operSt']
                 interface_obj = Interface(interface_type, pod, node, module, port,
                                           parent=None, session=session,
@@ -2577,10 +2631,11 @@ class Interface(BaseInterface):
                 interface_obj.adminstatus = adminstatus
                 interface_obj.speed = speed
                 interface_obj.mtu = mtu
+                interface_obj.dn = dist_name
 
                 if not isinstance(pod_parent, str) and pod_parent:
                     if interface_obj.pod == pod_parent.pod and interface_obj.node == pod_parent.node and \
-                                    interface_obj.module == pod_parent.slot:
+                            interface_obj.module == pod_parent.slot:
                         interface_obj._parent = pod_parent
                         interface_obj._parent.add_child(interface_obj)
                         resp.append(interface_obj)
@@ -2596,13 +2651,14 @@ class Interface(BaseInterface):
         return '\t'.join(attrgetter(*attr_names)(self))
 
     def __eq__(self, other):
+        # TODO: simplify and isinstance
         if type(self) != type(other):
             return False
-        if (self.attributes['interface_type'] == other.attributes.get('interface_type') and
-                    self.attributes['pod'] == other.attributes.get('pod') and
-                    self.attributes['node'] == other.attributes.get('node') and
-                    self.attributes['module'] == other.attributes.get('module') and
-                    self.attributes['port'] == other.attributes.get('port')):
+        if (self.interface_type == other.interface_type and
+                self.pod == other.pod and
+                self.node == other.node and
+                self.module == other.module and
+                self.port == other.port):
             return True
         return False
 
@@ -2620,9 +2676,9 @@ class Interface(BaseInterface):
         """
         result = None
 
-        links = Link.get(self._session, '1', self.attributes['node'])
+        links = Link.get(self._session, '1', self.node)
         for link in links:
-            if link.port1 == self.attributes['port']:
+            if link.port1 == self.port:
                 return link.get_port_id2()
         return result
 
@@ -2639,7 +2695,7 @@ class WorkingData(object):
     as a single object.
     """
 
-    def __init__(self, session = None, toolkit_class=None, url=None, deep=False, include_concrete=False):
+    def __init__(self, session=None, toolkit_class=None, url=None, deep=False, include_concrete=False):
 
         self.by_class = {}
         self.by_dn = {}
@@ -2650,7 +2706,7 @@ class WorkingData(object):
         self.session = session
         self.add(session, toolkit_class, url, deep, include_concrete)
 
-    def add(self, session = None, toolkit_class=None, url=None, deep=False, include_concrete=False):
+    def add(self, session=None, toolkit_class=None, url=None, deep=False, include_concrete=False):
 
         """
 
@@ -2668,11 +2724,12 @@ class WorkingData(object):
         if deep:
             apic_classes = toolkit_class.get_deep_apic_classes(include_concrete=include_concrete)
         else:
+            # noinspection PyProtectedMember
             apic_classes = toolkit_class._get_apic_classes()
-        query_url = url + 'query-target=subtree&target-subtree-class='+','.join(apic_classes)
+        query_url = url + 'query-target=subtree&target-subtree-class=' + ','.join(apic_classes)
 
         ret = session.get(query_url)
-        ret._content = ret._content.replace('\n', '')
+        ret._content = ret._content.decode().replace('\n', '').encode()
         data = ret.json()['imdata']
 
         if data:
@@ -2707,8 +2764,9 @@ class WorkingData(object):
                                 # look through all the objects in 'fabricNode' class and only insert if
                                 # this controller not already there.
                                 found = False
-                                for item_in_class in self.by_class[apic_class] :
-                                    if item[apic_class]['attributes']['dn'] == item_in_class[apic_class]['attributes']['dn']:
+                                for item_in_class in self.by_class[apic_class]:
+                                    if item[apic_class]['attributes']['dn'] == \
+                                            item_in_class[apic_class]['attributes']['dn']:
                                         found = True
                                         break
                                 if not found:
@@ -2743,7 +2801,7 @@ class WorkingData(object):
             for class_record in classes:
                 for class_id in class_record:
                     obj_dn = class_record[class_id]['attributes']['dn']
-                    if obj_dn[0:len(dname)] == dname:
+                    if obj_dn.startswith(dname+'/'):
                         result.append(class_record)
         return result
 
@@ -2969,8 +3027,8 @@ class PhysicalModel(BaseACIObject):
             assert isinstance(parent, Fabric)
 
         super(PhysicalModel, self).__init__(name='', parent=parent)
-
-        self.session = session
+        self.dn = 'topology'
+        self._session = session
 
     @staticmethod
     def _get_children_classes():
@@ -2993,6 +3051,19 @@ class PhysicalModel(BaseACIObject):
         physical_model = PhysicalModel(session=session, parent=parent)
         return [physical_model]
 
+    @classmethod
+    def get_deep(cls, session, include_concrete=False):
+        """
+        Will return the atk object and the entire tree under it.
+        :param session: APIC session to use
+        :param include_concrete: flag to indicate that concrete objects should also be included
+        :return:
+        """
+        atk_objects = cls(session)
+        for atk_object in atk_objects:
+            atk_object.populate_children(deep=True, include_concrete=include_concrete)
+        return atk_objects
+
 
 class Fabric(BaseACIObject):
     """
@@ -3012,7 +3083,31 @@ class Fabric(BaseACIObject):
 
         super(Fabric, self).__init__(name='', parent=None)
 
-        self.session = session
+        self._session = session
+        self.dn = '/'
+
+    @classmethod
+    def get(cls, session):
+        """
+
+        :param session:
+        """
+        cls.check_session(session)
+        fabric = Fabric(session)
+        fabric.name = 'Fabric'
+        return [fabric]
+
+    @classmethod
+    def get_deep(cls, session, include_concrete=False):
+        """
+        Will return the entire tree of the fabric.
+        :param session: APIC session to use
+        :param include_concrete: flag to indicate that concrete objects should also be included
+        :return:
+        """
+        fabrics = cls.get(session)
+        fabrics[0].populate_children(deep=True, include_concrete=include_concrete)
+        return fabrics
 
     @staticmethod
     def _get_children_classes():
@@ -3023,3 +3118,13 @@ class Fabric(BaseACIObject):
         :return: list of classes
         """
         return [PhysicalModel, ACI.LogicalModel]
+
+    def _define_searchables(self):
+        """
+        Create all of the searchable terms
+
+        """
+        results = super(Fabric, self)._define_searchables()
+        results[0].add_term('model', 'physical')
+
+        return results

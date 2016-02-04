@@ -1,4 +1,3 @@
-__author__ = 'edsall'
 # !/usr/bin/env python
 ################################################################################
 ################################################################################
@@ -19,7 +18,9 @@ __author__ = 'edsall'
 #    under the License.                                                        #
 #                                                                              #
 ################################################################################
-# all the import
+"""
+Implements the Searchable class
+"""
 
 
 class Searchable(object):
@@ -52,30 +53,36 @@ class Searchable(object):
         and the context of the item.
         """
         self.terms = set()
+        self.attr = set()
+        self.value = set()
+        self.attr_value = set()
         for term in dirty_terms:
             keyword, value = term[:2]
             relation = term[2] if len(term) == 3 else 'primary'
             self.add_term(keyword, value, relation)
         self.context = []
 
-    def add_term(self, keyword, value=None, relation='primary'):
+    def add_term(self, attr, value=None, relation='primary'):
         """
-        Will add a search keyword, value pair to the searchable item
+        Will add a search attr, value pair to the searchable item
         It will also add the relation.
-        :param keyword:
+        :param attr:
         :param value:
         :param relation:
         """
         if isinstance(value, unicode):
             value = str(value)
-        if isinstance(keyword, unicode):
-            keyword = str(keyword)
+        if isinstance(attr, unicode):
+            attr = str(attr)
 
-        assert relation in ['primary', 'indirect']
+        assert relation in ['primary', 'secondary']
         assert isinstance(value, str) or (value is None)
-        assert isinstance(keyword, str)
+        assert isinstance(attr, str)
 
-        self.terms.add((keyword, value, relation))
+        self.terms.add((attr, value, relation))
+        self.attr.add(attr)
+        self.value.add(value)
+        self.attr_value.add((attr, value))
 
     @property
     def primary(self):
@@ -89,10 +96,13 @@ class Searchable(object):
         else:
             return 'None'
 
-    # @property
-    # def key_value(self):
-    #
-    #     return str(self.keyword)+'::'+str(self.value)
+    @property
+    def object_class(self):
+        """
+        will return the acitoolkit class of the primary item as a string
+        :return: str
+        """
+        return self.primary.__class__.__name__
 
     def add_context(self, aci_object):
         """
@@ -103,7 +113,7 @@ class Searchable(object):
         self.context.append(aci_object)
 
     def __str__(self):
-        return '{2} {3}'.format(self.primary, self.path())
+        return '{} {}'.format(self.primary, self.path())
 
     def path(self):
         """
@@ -111,10 +121,7 @@ class Searchable(object):
 
         :return:
         """
-        names = []
-        for item in reversed(self.context):
-            names.append(str(item))
-        path = '/'.join(names)
+        path = self.primary.dn
         return path
 
     def __key(self):
@@ -150,12 +157,29 @@ class AciSearch(object):
 
     def _define_searchables(self):
         """
-        Abstract method that should be implemented in each child object.
+        Abstract method that should be called in each child object.
         It is here that all of the searchable instances are defined for
         the object.  They are placed in a list and returned as the result
         :rtype : list
         """
-        return []
+        result = Searchable()
+        atk_attrs = self.get_attributes()
+        for atk_attr in atk_attrs:
+            if atk_attrs[atk_attr] is not None:
+                if isinstance(atk_attrs[atk_attr], list):
+                    attr_list = atk_attrs[atk_attr]
+                    for attr in attr_list:
+                        if isinstance(atk_attrs[atk_attr], str) or isinstance(atk_attrs[atk_attr], bool):
+                            result.add_term(atk_attr, str(attr))
+                        #     print(atk_attr, str(attr))
+                        # else:
+                        #     print("wrong type %s" % str(atk_attr))
+                elif not isinstance(atk_attrs[atk_attr], str) and not isinstance(atk_attrs[atk_attr], bool):
+                    # print("wrong type %s" % str(atk_attr))
+                    pass
+                else:
+                    result.add_term(atk_attr, str(atk_attrs[atk_attr]))
+        return [result]
 
     @staticmethod
     def _dedup_searchables(result):

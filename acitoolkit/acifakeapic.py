@@ -16,11 +16,12 @@
 """  This module contains code that emulates the Session class except that
      there is no actual APIC and the configuration comes from JSON files.
 """
-import json
-import urlparse
-import re
 from copy import deepcopy
-from acisession import Session
+import json
+import re
+import urlparse
+
+from .acisession import Session
 
 
 class FakeResponse(object):
@@ -114,7 +115,7 @@ class FakeSession(Session):
         url = 'scheme://apic' + url
         url_parsed = urlparse.urlparse(url)
         cl_path = url_parsed.path.partition('.json')[0]
-        path_regex = '/api/(?:mo|node/class)/(([^/]*).*)'
+        path_regex = r'/api/(?:mo|node/class)/(([^/]*).*)'
         dn, root_cl = re.search(path_regex, cl_path).groups()
         # get the queries as a dict
         url_queries = urlparse.parse_qs(url_parsed.query)

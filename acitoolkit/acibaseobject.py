@@ -31,9 +31,12 @@
 This module implements the Base Class for creating all of the ACI Objects.
 """
 import logging
+from operator import attrgetter
+import sys
+
 from .aciSearch import AciSearch, Searchable
 from .acisession import Session
-import sys
+
 
 class BaseRelation(object):
     """
@@ -80,9 +83,13 @@ class BaseRelation(object):
         self.status = 'detached'
 
     def __eq__(self, other):
-        return (self.item == other.item and
-                self.status == other.status and
-                self.relation_type == other.relation_type)
+        if isinstance(other, self.__class__):
+            key_attrs = attrgetter('item', 'status', 'relation_type')
+            return key_attrs(self) == key_attrs(other)
+        return NotImplemented
+
+    def __ne__(self, other):
+        return not self == other
 
 
 class Tag(object):
@@ -101,6 +108,9 @@ class Tag(object):
             other = Tag(other)
         return self.name == other.name and self._deleted == other._deleted
 
+    def __ne__(self, other):
+        return not self == other
+
 
 class BaseACIObject(AciSearch):
     """
@@ -116,8 +126,8 @@ class BaseACIObject(AciSearch):
                      instance
         :param parent: Parent object within the acitoolkit object model.
         """
-        if sys.version_info < (3,0,0):
-            if (isinstance(name, unicode)):
+        if sys.version_info < (3, 0, 0):
+            if isinstance(name, unicode):
                 name = str(name)
         if name is None or not isinstance(name, str):
             raise TypeError
@@ -131,6 +141,7 @@ class BaseACIObject(AciSearch):
         self._tags = []
         self._parent = parent
         self.descr = None
+        self.dn = ''
         # self.subscribe = self._instance_subscribe
         # self.unsubscribe = self._instance_unsubscribe
         # self.has_events = self._instance_has_events
@@ -140,6 +151,9 @@ class BaseACIObject(AciSearch):
             if self._parent.has_child(self):
                 self._parent.remove_child(self)
             self._parent.add_child(self)
+
+    def __lt__(self, other):
+        return self.name < other.name
 
     @classmethod
     def _get_subscription_urls(cls):
@@ -271,7 +285,7 @@ class BaseACIObject(AciSearch):
                   tag assigned.
         """
         if not isinstance(tag, Tag):
-            search_tag = Tag(tag)
+            tag = Tag(tag)
         return tag in self.get_tags()
 
     def has_tags(self):
@@ -313,7 +327,7 @@ class BaseACIObject(AciSearch):
                     or an instance of Tag
         """
         if not isinstance(tag, Tag):
-            search_tag = Tag(tag)
+            tag = Tag(tag)
         self.get_tags().remove(tag)
 
     def delete_tag(self, tag):
@@ -354,7 +368,11 @@ class BaseACIObject(AciSearch):
         :param full_data:
         :param working_data:
         :param parent:
+        :param limit_to:
+        :param subtree:
+        :param config_only:
         """
+        obj = None
         for item in working_data:
             for key in item:
                 if key in cls._get_apic_classes():
@@ -379,16 +397,20 @@ class BaseACIObject(AciSearch):
         return obj
 
     @classmethod
-    def subscribe(cls, session):
+    def subscribe(cls, session, only_new=False):
         """
         Subscribe to events from the APIC that pertain to instances of this
         class.
 
         :param session:  the instance of Session used for APIC communication
+        :param only_new: Boolean indicating whether to get all events or only the new events. All events (indicated by
+                         setting only_new to False) will queue a create event for all of the currently existing objects.
+                         Setting only_new to True will only queue events that occur after the initial subscribe. The
+                         default has only_new set to False.
         """
         urls = cls._get_subscription_urls()
         for url in urls:
-            resp = session.subscribe(url)
+            resp = session.subscribe(url, only_new=only_new)
             if resp is not None:
                 if not resp.ok:
                     return resp
@@ -435,10 +457,7 @@ class BaseACIObject(AciSearch):
         :returns: True or False.  True if there are events pending.
         """
         urls = cls._get_subscription_urls()
-        for url in urls:
-            if session.has_events(url):
-                return True
-        return False
+        return any(session.has_events(url) for url in urls)
 
     def _instance_subscribe(self, session, extension=''):
         """
@@ -462,10 +481,7 @@ class BaseACIObject(AciSearch):
         :returns: True or False.  True if there are events pending.
         """
         urls = self._get_instance_subscription_urls()
-        for url in urls:
-            if session.has_events(url + extension):
-                return True
-        return False
+        return any(session.has_events(url + extension) for url in urls)
 
     def _instance_get_event(self, session, extension=''):
         """
@@ -670,10 +686,7 @@ class BaseACIObject(AciSearch):
         :returns:  True or False, True indicates that it does indeed\
                    have the `obj` object as a child.
         """
-        for child in self._children:
-            if child == obj:
-                return True
-        return False
+        return any(child == obj for child in self._children)
 
     def remove_child(self, obj):
         """
@@ -704,15 +717,18 @@ class BaseACIObject(AciSearch):
 
         return self._children
 
-        # assert(deep is True or deep is False)
-        # assert(include_concrete is True or include_concrete is False)
-        # return None
-
     def get_parent(self):
         """
         :returns: Parent of this object.
         """
         return self._parent
+
+    def has_parent(self):
+        """
+        returns True if this object has a parent
+        :return: bool
+        """
+        return self._parent is not None
 
     def _has_any_relation(self, other_class):
         """Check if the object has any relation to the other class"""
@@ -898,21 +914,47 @@ class BaseACIObject(AciSearch):
         return resp
 
     def __eq__(self, other):
-        if type(self) is not type(other):
-            return False
-        if self.get_parent() != other.get_parent():
-            return False
-        return self.name == other.name
+        if isinstance(other, self.__class__):
+            self_key = (self.get_parent(), self.name)
+            other_key = (other.get_parent(), other.name)
+            return self_key == other_key
+        return NotImplemented
 
     def __ne__(self, other):
-        return not self.__eq__(other)
+        return not self == other
 
     def _populate_from_attributes(self, attributes):
         """Fills in an object with the desired attributes.
            Overridden by inheriting classes to provide the specific attributes
            when getting objects from the APIC.
         """
-        pass
+
+        # always get a dn
+        self.dn = self.get_dn_from_attributes(attributes)
+        # pass
+
+    def get_dn_from_attributes(self, attributes):
+        """
+        Will get the dn from the attributes or construct it
+        using the dn of the parent plus the rn.
+        Failing those, it will return None
+        :rtype : dn string
+        :param attributes:
+        """
+
+        if attributes is not None:
+            dn = attributes.get('dn')
+            if dn is not None:
+                dn = str(attributes.get('dn'))
+            else:
+                if self.has_parent:
+                    dn = '{0}/{1}'.format(self.get_parent().dn, str(attributes.get('rn')))
+                else:
+                    dn = None
+        else:
+            dn = None
+
+        return dn
 
     def _generate_attributes(self):
         """Gets the attributes used in generating the JSON for the object
@@ -947,9 +989,13 @@ class BaseACIObject(AciSearch):
         query_url = ('/api/mo/uni%s.json?query-target=subtree&'
                      'target-subtree-class=%s' % (tenant_url, apic_class))
         ret = session.get(query_url)
-        data = ret.json()['imdata']
-        logging.debug('response returned %s', data)
         resp = []
+        if ret.ok:
+            data = ret.json()['imdata']
+            logging.debug('response returned %s', data)
+        else:
+            logging.error('Could not get %s. Received response: %s', query_url, ret.text)
+            return resp
         for object_data in data:
             name = str(object_data[apic_class]['attributes']['name'])
             obj = toolkit_class(name, parent)
@@ -984,7 +1030,7 @@ class BaseACIObject(AciSearch):
         match = True
         for attrib in search_object.__dict__:
             value1 = getattr(search_object, attrib)
-            if value1:
+            if value1 is not None:
                 if hasattr(self, attrib):
                     value2 = getattr(self, attrib)
                     if value1 != value2:
@@ -1036,6 +1082,55 @@ class BaseACIObject(AciSearch):
         :return: list of Table objects
         """
         return [None]
+
+    @staticmethod
+    def check_session(session):
+        """
+        This will check that the session is of type Session and raise exception if it not
+        :param session: the session to check
+        :return:
+        """
+
+        if not isinstance(session, Session):
+            raise TypeError('An instance of Session class is required')
+
+    def get_attributes(self, name=None):
+        """
+        Will return the value of the named attribute in a dictionary format.  If no name is given, then
+        it will return all attributes.
+
+        Note that attributes that start with _ (underbar) will NOT be included unless explicitly named
+
+        This method should be over-written as appropriate by inheriting objects to handle how their
+        local attributes are implemented.
+
+        This is intended to normalize how all attributes on all objects can be accessed since the implementations
+        were not consistent.
+
+        :param name: optional name of attribute to return
+        :return: dictionary of attributes and their values
+        """
+        result = {}
+        if name:
+            result[name] = getattr(self, name)
+            return result
+
+        for attrib in self.__dict__:
+            if attrib[0] != '_':
+                value = getattr(self, attrib)
+                try:
+                    if isinstance(value, str) or isinstance(value, int) or isinstance(value, unicode):
+                        result[attrib] = str(getattr(self, attrib))
+                    elif isinstance(value, list):
+                        if len(value) > 0:
+                            result[attrib] = value
+                except NameError:
+                    if isinstance(value, str) or isinstance(value, int):
+                        result[attrib] = str(getattr(self, attrib))
+                    elif isinstance(value, list):
+                        if len(value) > 0:
+                            result[attrib] = value
+        return result
 
 
 class BaseACIPhysObject(BaseACIObject):
@@ -1167,10 +1262,7 @@ class BaseACIPhysObject(BaseACIObject):
 
         # TODO: this does not work.  There are more parameters in the .get method.
         apic_nodes = cls.get(session)
-        for apic_node in apic_nodes:
-            if phys_obj == apic_node:
-                return True
-        return False
+        return any(apic_node == phys_obj for apic_node in apic_nodes)
 
     def get_type(self):
         """Gets physical object type
@@ -1206,17 +1298,6 @@ class BaseACIPhysObject(BaseACIObject):
         """
         return None
 
-    @staticmethod
-    def check_session(session):
-        """
-        This will check that the session is of type Session and raise exception if it not
-        :param session: the session to check
-        :return:
-        """
-
-        if not isinstance(session, Session):
-            raise TypeError('An instance of Session class is required')
-
     @classmethod
     def check_parent(cls, parent):
         """
@@ -1228,6 +1309,19 @@ class BaseACIPhysObject(BaseACIObject):
         if parent:
             if not isinstance(parent, cls._get_parent_class()):
                 raise TypeError('The parent of this object must be of class {0}'.format(cls._get_parent_class()))
+
+    @classmethod
+    def get_deep(cls, session, include_concrete=False):
+        """
+        Will return the atk object and the entire tree under it.
+        :param session: APIC session to use
+        :param include_concrete: flag to indicate that concrete objects should also be included
+        :return:
+        """
+        atk_objects = cls.get(session)
+        for atk_object in atk_objects:
+            atk_object.populate_children(deep=True, include_concrete=include_concrete)
+        return atk_objects
 
 
 class BaseACIPhysModule(BaseACIPhysObject):
@@ -1276,11 +1370,10 @@ class BaseACIPhysModule(BaseACIPhysObject):
         """ Two modules are considered equal if their class type is the same
         and pod, node, slot, type all match.
         """
-        if type(self) is not type(other):
-            return False
-
-        return (self.pod == other.pod) and (self.node == other.node) and \
-               (self.slot == other.slot) and (self.get_type() == other.type)
+        if isinstance(other, self.__class__):
+            key_attrs = attrgetter('pod', 'node', 'slot', 'type')
+            return key_attrs(self) == key_attrs(other)
+        return NotImplemented
 
     @staticmethod
     def _parse_dn(dn):
@@ -1325,8 +1418,7 @@ class BaseACIPhysModule(BaseACIPhysObject):
             interface_query_url = '/api/mo/' + parent_dn + \
                                   '.json?query-target=subtree&target-subtree-class=' + ','.join(apic_classes)
         else:
-            interface_query_url = ('/api/node/class/' + apic_classes[0] + '.json?'
-                                                                     'query-target=self')
+            interface_query_url = '/api/node/class/' + apic_classes[0] + '.json?query-target=self'
         cards = []
         ret = session.get(interface_query_url)
         card_data = ret.json()['imdata']
@@ -1385,45 +1477,17 @@ class BaseACIPhysModule(BaseACIPhysObject):
         """
         return self.serial
 
-    def _define_searchables(self):
-        """
-        Create all of the searchable terms
-
-        :rtype : list of Searchable
-        """
-        search_terms = [('node', self.node, 'indirect'), ('slot', self.slot)]
-
-        #result = [Searchable('node', self.node, 'indirect'), Searchable('slot', self.slot)]
-
-        if self.firmware is not None:
-            search_terms.append(('firmware', self.firmware))
-
-        if self.bios is not None:
-            search_terms.append(('bios', self.bios))
-
-        if self.serial is not None:
-            search_terms.append(('serial', self.serial))
-
-        if self.model is not None:
-            search_terms.append(('model', self.model))
-
-        if self.type is not None:
-            search_terms.append(('type', self.type))
-
-        if self.name is not None:
-            search_terms.append(('name', self.name))
-
-        if self.oper_st is not None:
-            search_terms.append(('oper_st', self.oper_st))
-
-        return [Searchable(search_terms)]
-
-
 
 class BaseInterface(BaseACIObject):
     """Abstract class used to provide base functionality to other Interface
        classes.
     """
+
+    @staticmethod
+    def is_dn_vpc(dn):
+        if '/protpaths' in dn:
+            return True
+        return False
 
     def _get_port_selector_json(self, port_type, port_name):
         """Returns the json used for selecting the specified interfaces
