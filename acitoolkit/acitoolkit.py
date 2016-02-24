@@ -1162,6 +1162,111 @@ class OutsideEPG(CommonEPG):
                                                attributes=attr,
                                                children=children)
 
+    def _extract_relationships(self, data, epg_type='l3'):
+        l3out = self.get_parent()
+        tenant = l3out.get_parent()
+        tenant_children = data[0]['fvTenant']['children']
+        epg_children = []
+        l3ext_out = epg_type + 'extOut'
+        l3ext_instp = epg_type + 'extInstP'
+        for l3out_child in tenant_children:
+            if l3ext_out in l3out_child:
+                if l3out_child[l3ext_out]['attributes']['name'] == l3out.name:
+                    for l3epg in l3out_child[l3ext_out]['children']:
+                        if l3ext_instp in l3epg:
+                            if l3epg[l3ext_instp]['attributes']['name'] == self.name:
+                                epg_children = l3epg[l3ext_instp]['children']
+        for child in epg_children:
+            if 'fvRsProv' in child:
+                contract_name = child['fvRsProv']['attributes']['tnVzBrCPName']
+                contract_search = Search()
+                contract_search.name = contract_name
+                objs = tenant.find(contract_search)
+                if len(objs):
+                    for contract in objs:
+                        if isinstance(contract, Contract):
+                            self.provide(contract)
+                else:
+                    # Need to check tenant common (if available)
+                    fabric = tenant.get_parent()
+                    if fabric is not None:
+                        tenant_search = Search()
+                        tenant_search.name = 'common'
+                        tenant_common = fabric.find(tenant_search)
+                        if len(tenant_common):
+                            objs = tenant_common[0].find(contract_search)
+                            if len(objs):
+                                for contract in objs:
+                                    if isinstance(contract, Contract):
+                                        self.provide(contract)
+            elif 'fvRsCons' in child:
+                contract_name = child['fvRsCons']['attributes']['tnVzBrCPName']
+                contract_search = Search()
+                contract_search.name = contract_name
+                objs = tenant.find(contract_search)
+                if len(objs):
+                    for contract in objs:
+                        if isinstance(contract, Contract):
+                            self.consume(contract)
+                else:
+                    # Need to check tenant common (if available)
+                    fabric = tenant.get_parent()
+                    if fabric is not None:
+                        tenant_search = Search()
+                        tenant_search.name = 'common'
+                        tenant_common = fabric.find(tenant_search)
+                        if len(tenant_common):
+                            objs = tenant_common[0].find(contract_search)
+                            if len(objs):
+                                for contract in objs:
+                                    if isinstance(contract, Contract):
+                                        self.consume(contract)
+
+        super(OutsideEPG, self)._extract_relationships(data)
+
+
+class OutsideL2EPG(CommonEPG):
+    @classmethod
+    def _get_apic_classes(cls):
+        """
+        Get the APIC classes used by this acitoolkit class.
+
+        :returns: list of strings containing APIC class names
+        """
+        return ['l2extInstP']
+
+    def get_json(self):
+        """
+        Returns json representation of the EPG
+
+        :returns: json dictionary of the EPG
+        """
+        children = super(OutsideL2EPG, self)._get_common_json()
+        attr = self._generate_attributes()
+        return super(CommonEPG, self).get_json(self._get_apic_classes()[0],
+                                               attributes=attr,
+                                               children=children)
+
+    @staticmethod
+    def _get_parent_class():
+        """
+        Gets the class of the parent object
+
+        :returns: class of parent object
+        """
+        return OutsideL2
+
+    @staticmethod
+    def _get_parent_dn(dn):
+        return dn.split('/instP-')[0]
+
+    @staticmethod
+    def _get_name_from_dn(dn):
+        return dn.split('/instP-')[1].split('/')[0]
+
+    def _extract_relationships(self, data):
+        super(OutsideL2EPG, self)._extract_relationships(data, epg_type='l2')
+
 
 class OutsideL3(BaseACIObject):
     """Represents the L3Out for external connectivity
@@ -1299,6 +1404,148 @@ class OutsideL3(BaseACIObject):
             children.append(text)
         attr = self._generate_attributes()
         return super(OutsideL3, self).get_json('l3extOut',
+                                               attributes=attr,
+                                               children=children)
+
+
+class OutsideL2(BaseACIObject):
+    """Represents the L2Out for external connectivity
+    """
+
+    def __init__(self, l2out_name, parent=None):
+        """
+        :param l2out_name: String containing the name of this OutsideL2
+        :param parent: Instance of the Tenant class representing\
+                       the tenant owning this OutsideL2.
+        """
+        self.bd_name = None
+        self.networks = []
+
+        if not isinstance(parent, Tenant):
+            raise TypeError('Parent is not set to Tenant')
+        super(OutsideL2, self).__init__(l2out_name, parent)
+
+    @staticmethod
+    def _get_name_from_dn(dn):
+        return dn.split('/l2out-')[1].split('/')[0]
+
+    @staticmethod
+    def _get_parent_dn(dn):
+        return dn.split('/l2out-')[0]
+
+    @staticmethod
+    def _get_parent_class():
+        """
+        Gets the class of the parent object
+
+        :returns: class of parent object
+        """
+        return Tenant
+
+    @classmethod
+    def _get_toolkit_to_apic_classmap(cls):
+        """
+        Gets the APIC class to an acitoolkit class mapping dictionary
+        :returns: dict of APIC class names to acitoolkit classes
+        """
+        return {'l2extInstP': OutsideL2EPG}
+
+    @classmethod
+    def _get_apic_classes(cls):
+        """
+        Get the APIC classes used by this acitoolkit class.
+
+        :returns: list of strings containing APIC class names
+        """
+        return ['l2extOut']
+
+    def has_bd(self):
+        """
+        Check if the BridgeDomain has been assigned
+
+        :returns: True or False. True if a BridgeDomain has been assigned to this
+                  L2Interface.
+        """
+        return self._has_any_relation(BridgeDomain)
+
+    def add_bd(self, bd):
+        """
+        Add BridgeDomain to the EPG
+
+        :param bd: Instance of BridgeDomain class to assign to this OutsideL2.
+        """
+        assert isinstance(bd, BridgeDomain)
+        if self.has_bd():
+            self.remove_bd()
+        self.bd_name = bd.name
+        self._add_relation(bd)
+
+    def remove_bd(self):
+        """
+        Remove the BridgeDomain from the EPG
+        """
+        self._remove_all_relation(BridgeDomain)
+
+    def _extract_relationships(self, data):
+        tenant_children = data[0]['fvTenant']['children']
+        for child in tenant_children:
+            if 'l2extOut' in child:
+                outside_l2_name = child['l2extOut']['attributes']['name']
+                if outside_l2_name == self.name:
+                    outside_children = child['l2extOut']['children']
+                    for outside_child in outside_children:
+                        if 'l2extRsEBd' in outside_child:
+                            bd_name = outside_child['l2extRsEBd']['attributes']['tnFvBDName']
+                            tenant = self.get_parent()
+                            bd_search = Search()
+                            bd_search.name = bd_name
+                            objs = tenant.find(bd_search)
+                            for bd in objs:
+                                if isinstance(bd, BridgeDomain):
+                                    self.add_bd(bd)
+                    break
+        super(OutsideL2, self)._extract_relationships(data)
+
+    # L2 External Domain
+    def add_l2extdom(self, extdom):
+        """
+        Set the L2ExternalDomain for this BD
+        :param extdom:
+        """
+        if not isinstance(extdom, L2ExtDomain):
+            raise TypeError('add_extdom not called with L2ExtDom')
+        self._add_relation(extdom)
+
+    def has_l2extdom(self):
+        """
+        :return: Boolean indicating presence of L2 External Domain Attachment
+        """
+        return len(self._get_all_relation(L2ExtDomain)) > 0
+
+    def get_json(self):
+        """
+        Returns json representation of OutsideL2
+
+        :returns: json dictionary of OutsideL2
+        """
+        children = []
+        if self.bd_name is not None:
+            bd = {'l2extRsEctx': {'attributes': {'tnFvBDName':
+                                                 self.bd_name}}}
+            children.append(bd)
+
+        # Attach L2 External Domains if present
+        if self.has_l2extdom():
+            domain = {"l2extRsL2DomAtt":
+                      {"attributes":
+                       {"tDn": "uni/l2dom-{}".format(self._get_any_relation(L2ExtDomain))}}}
+            children.append(domain)
+
+        for interface in self.get_interfaces():
+            text = interface.get_json()
+            children.append(text)
+        attr = self._generate_attributes()
+        return super(OutsideL2, self).get_json('l2extOut',
                                                attributes=attr,
                                                children=children)
 
@@ -2070,6 +2317,7 @@ class BridgeDomain(BaseACIObject):
         self.unicast_route = attributes.get('unicastRoute')
         self.unknown_mac_unicast = attributes.get('unkMacUcastAct')
         self.unknown_multicast = attributes.get('unkMcastAct')
+        self.multidestination = attributes.get('multiDstPktAct')
         self.modified_time = attributes.get('modTs')
         # dn = attributes.get('dn')
         self.dn = self.get_dn_from_attributes(attributes)
@@ -2526,6 +2774,11 @@ class BaseContract(BaseACIObject):
     def __init__(self, contract_name, parent=None):
         super(BaseContract, self).__init__(contract_name, parent)
         self._scope = 'context'
+
+    def _populate_from_attributes(self, attributes):
+        super(BaseContract, self)._populate_from_attributes(attributes)
+        if 'scope' in attributes:
+            self.set_scope(str(attributes['scope']))
 
     @staticmethod
     def _get_contract_code():
@@ -3418,6 +3671,8 @@ class Endpoint(BaseACIObject):
                             if 'protpaths' in if_dn:
                                 regex = re.search(r'pathep-\[(.+)\]$', if_dn)
                                 self.if_name = regex.group(1)
+                            elif 'tunnel' in if_dn:
+                                self.if_name = if_dn
                             else :
                                 name = if_dn.split('/')
                                 pod = str(name[1].split('-')[1])
@@ -3709,6 +3964,21 @@ class IPEndpoint(BaseACIObject):
         :returns: class of parent object
         """
         return EPG
+
+    @classmethod
+    def _get_parent_from_dn(cls, dn):
+        """
+        Derive the parent object using a dn
+
+        :param dn: String containing a distinguished name of an object
+        """
+        if '/l2out-' in dn and '/instP-' in dn:
+            parent_name = OutsideL2EPG._get_name_from_dn(dn)
+            parent_dn = cls._get_parent_dn(dn)
+            parent_obj = OutsideL2EPG(parent_name,
+                                      OutsideL2EPG._get_parent_from_dn(parent_dn))
+            return parent_obj
+        return super(IPEndpoint, cls)._get_parent_from_dn(dn)
 
     @staticmethod
     def _get_parent_dn(dn):
