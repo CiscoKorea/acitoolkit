@@ -398,7 +398,7 @@ class ConfigDB(object):
         sftp.chdir('/home/%s' % self.session.uid)
         file_names = sftp.listdir()
         for file_name in file_names:
-            if str(file_name).startswith('ce_snapback-'):
+            if str(file_name).startswith('ce2_snapback-'):
                 sftp.get('/home/' + self.session.uid + '/' + file_name, './' + file_name)
                 sftp.remove('/home/' + self.session.uid + '/' + file_name)
                 with tarfile.open(file_name, 'r:gz') as tfile:
@@ -406,7 +406,7 @@ class ConfigDB(object):
                 os.remove(file_name)
                 for json_filename in os.listdir(self.repo_dir):
                     print 'checking', json_filename
-                    if json_filename.startswith('ce_snapback') and json_filename.endswith('.json'):
+                    if json_filename.startswith('ce2_snapback') and json_filename.endswith('.json'):
                         new_filename = 'snapshot_' + self.session.ipaddr + '_' + json_filename.rpartition('_')[2]
                         new_filename = os.path.join(self.repo_dir, new_filename)
                         print 'renaming', json_filename, 'to', new_filename
@@ -828,7 +828,7 @@ class ConfigDB(object):
             self._check_versions(filename, current_version, old_version)
 
     def _generate_tar_gz(self, filenames, version):
-        tar = tarfile.open('ce_snapback.tar.gz', 'w:gz')
+        tar = tarfile.open('ce2_snapback.tar.gz', 'w:gz')
         for filename in filenames:
             content = self.get_file(filename, version)
             content = json.loads(content)
@@ -854,15 +854,15 @@ class ConfigDB(object):
         ssh.connect(self.session.ipaddr, username=self.session.uid, password=self.session.pwd)
         sftp = ssh.open_sftp()
         sftp.chdir('/home/%s' % self.session.uid)
-        sftp.put('./ce_snapback.tar.gz', 'ce_snapback.tar.gz')
+        sftp.put('./ce2_snapback.tar.gz', 'ce2_snapback.tar.gz')
 
         # Remove the local tar file
-        os.remove('./ce_snapback.tar.gz')
+        os.remove('./ce2_snapback.tar.gz')
 
         # Send the import policy to the APIC
         url = '/api/node/mo/uni/fabric.json'
         payload = {"configImportP": {"attributes": { "name": "snapback",
-                                                     "fileName": "ce_snapback.tar.gz",
+                                                     "fileName": "ce2_snapback.tar.gz",
                                                      "adminSt": "triggered",
                                                      "importType": "replace",
                                                      "importMode": "atomic"},
